@@ -1,14 +1,1 @@
-// vercel.json - Optional configuration file for your Vercel deployment
-{
-  "rewrites": [
-    { "source": "/(.*)", "destination": "/" }
-  ],
-  "headers": [
-    {
-      "source": "/api/(.*)",
-      "headers": [
-        { "key": "Cache-Control", "value": "s-maxage=0" }
-      ]
-    }
-  ]
-}
+{"rewrites": [{"source": "/(.*)", "destination": "/"}]}
