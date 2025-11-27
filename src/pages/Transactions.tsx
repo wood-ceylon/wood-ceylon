@@ -1,252 +1,437 @@
-import React, { useEffect, useState } from 'react';
-import { supabase, formatCurrency, generateTransactionNumber, toMinor, fromMinor } from '../lib/supabase';
+import React, { useState, useEffect } from 'react';
+import { Plus, Download, Search, Filter, RefreshCw } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { supabase } from '../lib/supabase';
+import { toMinor, fromMinor, formatCurrency } from '../lib/utils';
 import { Transaction, Account } from '../lib/types';
-import { Plus, ArrowUpRight, ArrowDownRight, RefreshCw, Download, Trash2 } from 'lucide-react';
+import TransactionModal from '../components/TransactionModal';
 
-export default function Transactions() {
+const Transactions: React.FC = () => {
+  const navigate = useNavigate();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [filteredTransactions, setFilteredTransactions] = useState<Transaction[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [transactionType, setTransactionType] = useState<'income' | 'expense' | 'transfer'>('income');
+  
+  // Filter states
+  const [filters, setFilters] = useState({
+    search: '',
+    dateFrom: '',
+    dateTo: '',
+    transactionType: '',
+    accountType: '',
+    accountName: '',
+    category: '',
+    minAmount: '',
+    maxAmount: ''
+  });
 
   useEffect(() => {
-    loadTransactions();
     loadAccounts();
   }, []);
 
-  async function loadTransactions() {
-    const { data: txns } = await supabase
-      .from('transactions')
-      .select('*')
-      .order('transaction_date', { ascending: false });
+  useEffect(() => {
+    if (accounts.length > 0) {
+      loadTransactions();
+    }
+  }, [accounts]);
 
-    if (txns) {
-      // Only process transactions if accounts are already loaded
-      if (accounts.length > 0) {
-        const txnsWithAccounts = txns.map(t => ({
-          ...t,
-          from_account_name: accounts.find(a => a.id === t.from_account_id)?.account_name,
-          to_account_name: accounts.find(a => a.id === t.to_account_id)?.account_name
+  useEffect(() => {
+    applyFilters();
+  }, [transactions, filters]);
+
+  async function loadAccounts() {
+    const { data, error } = await supabase
+      .from('accounts')
+      .select('*')
+      .order('account_name');
+
+    if (error) {
+      console.error('Error loading accounts:', error);
+    } else {
+      setAccounts(data || []);
+    }
+  }
+
+  async function loadTransactions() {
+    setLoading(true);
+    try {
+      // Use simple query first to avoid foreign key join issues
+      const { data: txns, error } = await supabase
+        .from('transactions')
+        .select('*')
+        .order('transaction_date', { ascending: false });
+
+      if (error) {
+        console.error('Error loading transactions:', error);
+        setTransactions([]);
+      } else if (txns) {
+        // Enrich transaction data with account information
+        const enriched = txns.map(txn => ({
+          ...txn,
+          from_account_name: accounts.find(a => a.id === txn.from_account_id)?.account_name || 'N/A',
+          to_account_name: accounts.find(a => a.id === txn.to_account_id)?.account_name || 'N/A',
+          account_type: accounts.find(a => 
+            a.id === txn.from_account_id || a.id === txn.to_account_id
+          )?.account_type || 'personal'
         }));
-        setTransactions(txnsWithAccounts);
-      } else {
-        // If accounts not loaded yet, set transactions without account names
-        setTransactions(txns);
+        setTransactions(enriched);
       }
+    } catch (error) {
+      console.error('Error loading transactions:', error);
+      // If everything fails, show empty array
+      setTransactions([]);
     }
     setLoading(false);
   }
 
-  async function loadAccounts() {
-    const { data } = await supabase
-      .from('accounts')
-      .select('*')
-      .eq('is_active', true)
-      .order('account_name');
-    if (data) {
-      // Sort accounts to ensure loan accounts appear last
-      const sortedAccounts = data.sort((a, b) => {
-        if (a.account_type === 'loan' && b.account_type !== 'loan') return 1;
-        if (a.account_type !== 'loan' && b.account_type === 'loan') return -1;
-        return a.account_name.localeCompare(b.account_name);
+  function applyFilters() {
+    let filtered = [...transactions];
+
+    // Search filter
+    if (filters.search) {
+      const searchLower = filters.search.toLowerCase();
+      filtered = filtered.filter(txn => 
+        txn.description?.toLowerCase().includes(searchLower) ||
+        txn.category?.toLowerCase().includes(searchLower) ||
+        txn.transaction_number?.toLowerCase().includes(searchLower) ||
+        txn.from_account_name?.toLowerCase().includes(searchLower) ||
+        txn.to_account_name?.toLowerCase().includes(searchLower)
+      );
+    }
+
+    // Date filters
+    if (filters.dateFrom) {
+      filtered = filtered.filter(txn => new Date(txn.transaction_date) >= new Date(filters.dateFrom));
+    }
+    if (filters.dateTo) {
+      filtered = filtered.filter(txn => new Date(txn.transaction_date) <= new Date(filters.dateTo + 'T23:59:59'));
+    }
+
+    // Transaction type filter
+    if (filters.transactionType) {
+      filtered = filtered.filter(txn => txn.transaction_type === filters.transactionType);
+    }
+
+    // Account type filter
+    if (filters.accountType) {
+      filtered = filtered.filter(txn => {
+        const fromAccount = accounts.find(a => a.id === txn.from_account_id);
+        const toAccount = accounts.find(a => a.id === txn.to_account_id);
+        return fromAccount?.account_type === filters.accountType || toAccount?.account_type === filters.accountType;
       });
-      setAccounts(sortedAccounts);
-      // Always reload transactions when accounts are loaded to ensure proper account names
-      loadTransactions();
     }
+
+    // Account name filter
+    if (filters.accountName) {
+      const accountNameLower = filters.accountName.toLowerCase();
+      filtered = filtered.filter(txn => {
+        const fromAccount = accounts.find(a => a.id === txn.from_account_id);
+        const toAccount = accounts.find(a => a.id === txn.to_account_id);
+        return fromAccount?.account_name.toLowerCase().includes(accountNameLower) ||
+               toAccount?.account_name.toLowerCase().includes(accountNameLower);
+      });
+    }
+
+    // Category filter
+    if (filters.category) {
+      filtered = filtered.filter(txn => txn.category === filters.category);
+    }
+
+    // Amount filters
+    if (filters.minAmount) {
+      filtered = filtered.filter(txn => txn.amount_minor >= toMinor(parseFloat(filters.minAmount)));
+    }
+    if (filters.maxAmount) {
+      filtered = filtered.filter(txn => txn.amount_minor <= toMinor(parseFloat(filters.maxAmount)));
+    }
+
+    setFilteredTransactions(filtered);
   }
 
-  async function handleSaveTransaction(txnData: Partial<Transaction>) {
-    try {
-      // Always generate transaction number if not provided
-      let finalTxnData = { ...txnData };
-      if (!txnData.transaction_number) {
-        finalTxnData.transaction_number = await generateTransactionNumber();
-      }
-      
-      // Clean up the data to ensure proper null handling
-      const cleanedTxnData = {
-        transaction_date: finalTxnData.transaction_date,
-        transaction_type: finalTxnData.transaction_type,
-        from_account_id: finalTxnData.from_account_id || null,
-        to_account_id: finalTxnData.to_account_id || null,
-        amount_minor: finalTxnData.amount_minor,
-        description: finalTxnData.description || null,
-        category: finalTxnData.category || null,
-        reference_type: finalTxnData.reference_type || null,
-        reference_id: finalTxnData.reference_id || null,
-        payment_method: finalTxnData.payment_method || 'cash',
-        transaction_number: finalTxnData.transaction_number
-      };
-      
-      console.log('Inserting transaction:', cleanedTxnData);
-      const { data, error } = await supabase.from('transactions').insert(cleanedTxnData).select();
-      if (error) {
-        console.error('Database error:', error);
-        throw error;
-      }
-      console.log('Transaction inserted successfully:', data);
-
-      // Update account balances only if transaction was successful
-      if (txnData.transaction_type === 'income' && txnData.to_account_id) {
-        const account = accounts.find(a => a.id === txnData.to_account_id);
-        if (account) {
-          await supabase
-            .from('accounts')
-            .update({ 
-              balance_minor: account.balance_minor + (txnData.amount_minor || 0),
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', txnData.to_account_id);
-        }
-      } else if (txnData.transaction_type === 'expense' && txnData.from_account_id) {
-        const account = accounts.find(a => a.id === txnData.from_account_id);
-        if (account) {
-          await supabase
-            .from('accounts')
-            .update({ 
-              balance_minor: account.balance_minor - (txnData.amount_minor || 0),
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', txnData.from_account_id);
-        }
-      } else if (txnData.transaction_type === 'transfer' && txnData.from_account_id && txnData.to_account_id) {
-        const fromAccount = accounts.find(a => a.id === txnData.from_account_id);
-        const toAccount = accounts.find(a => a.id === txnData.to_account_id);
-        if (fromAccount && toAccount) {
-          await supabase
-            .from('accounts')
-            .update({ 
-              balance_minor: fromAccount.balance_minor - (txnData.amount_minor || 0),
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', txnData.from_account_id);
-          await supabase
-            .from('accounts')
-            .update({ 
-              balance_minor: toAccount.balance_minor + (txnData.amount_minor || 0),
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', txnData.to_account_id);
-        }
-      }
-
-      // Close modal and reload data
-      setShowModal(false);
-      await loadTransactions();
-      await loadAccounts();
-    } catch (error) {
-      console.error('Error saving transaction:', error);
-      const errorMessage = error?.message || 'Failed to save transaction';
-      alert(`Failed to save transaction: ${errorMessage}`);
-    }
+  function getActiveFiltersCount() {
+    return Object.values(filters).filter(value => value !== '').length;
   }
 
-  async function handleDeleteTransaction(transactionId: string) {
-    const transaction = transactions.find(t => t.id === transactionId);
-    
-    if (!transaction) return;
-    
-    // Prevent deletion of profit distribution transactions
-    if (transaction.category === 'profit_distribution' || transaction.reference_type === 'profit_share') {
-      alert('Profit distribution transactions cannot be deleted. They are automatically created when orders are completed.');
-      return;
-    }
-    
-    if (!confirm('Are you sure you want to delete this transaction?')) return;
-    
-    try {
-      const { error } = await supabase.from('transactions').delete().eq('id', transactionId);
-      
-      if (error) throw error;
-      
-      // Update account balances
-      if (transaction.transaction_type === 'income' && transaction.to_account_id) {
-        const account = accounts.find(a => a.id === transaction.to_account_id);
-        if (account) {
-          await supabase
-            .from('accounts')
-            .update({ 
-              balance_minor: account.balance_minor - transaction.amount_minor,
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', transaction.to_account_id);
-        }
-      } else if (transaction.transaction_type === 'expense' && transaction.from_account_id) {
-        const account = accounts.find(a => a.id === transaction.from_account_id);
-        if (account) {
-          await supabase
-            .from('accounts')
-            .update({ 
-              balance_minor: account.balance_minor + transaction.amount_minor,
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', transaction.from_account_id);
-        }
-      } else if (transaction.transaction_type === 'transfer' && transaction.from_account_id && transaction.to_account_id) {
-        const fromAccount = accounts.find(a => a.id === transaction.from_account_id);
-        const toAccount = accounts.find(a => a.id === transaction.to_account_id);
-        if (fromAccount && toAccount) {
-          await supabase
-            .from('accounts')
-            .update({ 
-              balance_minor: fromAccount.balance_minor + transaction.amount_minor,
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', transaction.from_account_id);
-          await supabase
-            .from('accounts')
-            .update({ 
-              balance_minor: toAccount.balance_minor - transaction.amount_minor,
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', transaction.to_account_id);
-        }
-      }
-      
-      await loadTransactions();
-      await loadAccounts();
-    } catch (error) {
-      console.error('Error deleting transaction:', error);
-      alert('Failed to delete transaction');
-    }
+  function clearFilters() {
+    setFilters({
+      search: '',
+      dateFrom: '',
+      dateTo: '',
+      transactionType: '',
+      accountType: '',
+      accountName: '',
+      category: '',
+      minAmount: '',
+      maxAmount: ''
+    });
   }
 
   function exportToCSV() {
-    const headers = ['Date', 'Type', 'From Account', 'To Account', 'Amount', 'Category', 'Description'];
-    const rows = transactions.map(t => [
-      t.transaction_date,
-      t.transaction_type,
-      t.from_account_name || '-',
-      t.to_account_name || '-',
-      fromMinor(t.amount_minor),
-      t.category || '-',
-      t.description || '-'
+    const headers = ['Transaction ID', 'Date', 'Type', 'From Account', 'To Account', 'Amount (LKR)', 'Category', 'Description'];
+    const rows = filteredTransactions.map(txn => [
+      txn.transaction_number || '',
+      new Date(txn.transaction_date).toLocaleDateString(),
+      txn.transaction_type,
+      txn.from_account_name || '',
+      txn.to_account_name || '',
+      fromMinor(txn.amount_minor).toFixed(2),
+      txn.category || '',
+      txn.description || ''
     ]);
-    const csv = [headers, ...rows].map(row => row.join(',')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
+
+    const totalIncome = filteredTransactions
+      .filter(t => t.transaction_type === 'income')
+      .reduce((sum, t) => sum + fromMinor(t.amount_minor), 0);
+    const totalExpense = filteredTransactions
+      .filter(t => t.transaction_type === 'expense')
+      .reduce((sum, t) => sum + fromMinor(t.amount_minor), 0);
+
+    const csvContent = [
+      ...[headers],
+      ...rows,
+      [],
+      [`SUMMARY`, '', '', '', '', '', '', ''],
+      [`Total Income:`, '', '', '', '', totalIncome.toFixed(2), '', ''],
+      [`Total Expense:`, '', '', '', '', totalExpense.toFixed(2), '', ''],
+      [`Net Amount:`, '', '', '', '', (totalIncome - totalExpense).toFixed(2), '', '']
+    ].map(row => row.join(',')).join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `transactions_${new Date().toISOString().split('T')[0]}.csv`;
-    a.click();
+    link.setAttribute('href', url);
+    link.setAttribute('download', `transactions_${new Date().toISOString().split('T')[0]}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   }
+
+  function generateTransactionNumber(): string {
+    const now = new Date();
+    const year = now.getFullYear().toString().slice(-2);
+    const month = (now.getMonth() + 1).toString().padStart(2, '0');
+    const day = now.getDate().toString().padStart(2, '0');
+    const time = now.getTime().toString().slice(-4);
+    return `TXN${year}${month}${day}${time}`;
+  }
+
+  async function handleSaveTransaction(transactionData: any) {
+    try {
+      console.log('Transactions - Received transaction data:', transactionData);
+      
+      // Validate required fields first
+      if (!transactionData) {
+        throw new Error('No transaction data provided');
+      }
+
+      if (!transactionData.transaction_type) {
+        throw new Error('Transaction type is required');
+      }
+
+      if (!transactionData.amount || isNaN(parseFloat(transactionData.amount)) || parseFloat(transactionData.amount) <= 0) {
+        throw new Error('Valid amount is required');
+      }
+
+      if (!transactionData.category) {
+        throw new Error('Category is required - please select from the dropdown');
+      }
+      
+      // Ensure we have a clean, serializable object
+      const cleanTransactionData = {
+        transaction_type: String(transactionData.transaction_type || '').trim(),
+        amount: String(transactionData.amount || '0').trim(),
+        description: String(transactionData.description || '').trim(),
+        category: String(transactionData.category || '').trim(),
+        payment_method: String(transactionData.payment_method || 'cash').trim(),
+        transaction_date: String(transactionData.transaction_date || new Date().toISOString().split('T')[0]).trim(),
+        from_account_id: transactionData.from_account_id && 
+                        transactionData.from_account_id.trim() !== '' && 
+                        transactionData.from_account_id !== 'null' 
+          ? transactionData.from_account_id.trim() 
+          : null,
+        to_account_id: transactionData.to_account_id && 
+                      transactionData.to_account_id.trim() !== '' && 
+                      transactionData.to_account_id !== 'null' 
+          ? transactionData.to_account_id.trim() 
+          : null,
+      };
+
+      console.log('Transactions - Clean transaction data:', cleanTransactionData);
+
+      // Validate UUIDs if provided
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+      
+      if (cleanTransactionData.from_account_id && !uuidRegex.test(cleanTransactionData.from_account_id)) {
+        throw new Error('Invalid from account ID format');
+      }
+      
+      if (cleanTransactionData.to_account_id && !uuidRegex.test(cleanTransactionData.to_account_id)) {
+        throw new Error('Invalid to account ID format');
+      }
+
+      // Validate transaction type
+      const validTypes = ['income', 'expense', 'transfer'];
+      if (!validTypes.includes(cleanTransactionData.transaction_type)) {
+        throw new Error('Invalid transaction type');
+      }
+
+      const amount = parseFloat(cleanTransactionData.amount);
+      if (amount <= 0) {
+        throw new Error('Amount must be greater than zero');
+      }
+
+      // Convert amount to minor units
+      const amountMinor = toMinor(amount);
+      if (amountMinor <= 0) {
+        throw new Error('Invalid amount after conversion');
+      }
+
+      if (transactionData.id) {
+        // Update existing transaction
+        const { error } = await supabase
+          .from('transactions')
+          .update({
+            transaction_type: cleanTransactionData.transaction_type,
+            amount_minor: amountMinor,
+            description: cleanTransactionData.description,
+            category: cleanTransactionData.category,
+            payment_method: cleanTransactionData.payment_method,
+            transaction_date: cleanTransactionData.transaction_date,
+            from_account_id: cleanTransactionData.from_account_id,
+            to_account_id: cleanTransactionData.to_account_id,
+          })
+          .eq('id', transactionData.id);
+
+        if (error) {
+          console.error('Supabase update error:', error);
+          throw new Error(`Database error: ${error.message}`);
+        }
+      } else {
+        // Create new transaction
+        const { error } = await supabase
+          .from('transactions')
+          .insert([{
+            id: crypto.randomUUID(),
+            transaction_number: generateTransactionNumber(),
+            transaction_type: cleanTransactionData.transaction_type,
+            amount_minor: amountMinor,
+            description: cleanTransactionData.description,
+            category: cleanTransactionData.category,
+            payment_method: cleanTransactionData.payment_method,
+            transaction_date: cleanTransactionData.transaction_date,
+            from_account_id: cleanTransactionData.from_account_id,
+            to_account_id: cleanTransactionData.to_account_id,
+            reference_type: null,
+            reference_id: null,
+          }]);
+
+        if (error) {
+          console.error('Supabase insert error:', error);
+          throw new Error(`Database error: ${error.message}`);
+        }
+      }
+
+      console.log('Transaction saved successfully!');
+      await loadTransactions();
+      setShowModal(false);
+      
+    } catch (error: any) {
+      console.error('Error saving transaction:', error);
+      const errorMessage = error.message || 'Unknown error occurred';
+      alert('Error saving transaction: ' + errorMessage);
+    }
+  }
+
+  async function handleDeleteTransaction(transaction: Transaction) {
+    if (!transaction) return;
+
+    if (!confirm('Are you sure you want to delete this transaction?')) return;
+
+    try {
+      const { error } = await supabase
+        .from('transactions')
+        .delete()
+        .eq('id', transaction.id);
+
+      if (error) throw error;
+
+      loadTransactions();
+    } catch (error: any) {
+      console.error('Error deleting transaction:', error);
+      alert('Error deleting transaction: ' + error.message);
+    }
+  }
+
+  const availableCategories = [...new Set(transactions.map(t => t.category).filter(Boolean))].sort();
+
+  // Add predefined categories from the modal to the filter dropdown
+  const predefinedCategories = [
+    'Office Supplies',
+    'Utilities',
+    'Rent',
+    'Salaries',
+    'Marketing',
+    'Travel',
+    'Meals',
+    'Transportation',
+    'Equipment',
+    'Maintenance',
+    'Insurance',
+    'Professional Services',
+    'Software & Tools',
+    'Materials',
+    'Sales',
+    'Services',
+    'Investment',
+    'Loan Payment',
+    'Other Income',
+    'Other Expense'
+  ];
+  
+  const allCategories = [...new Set([...availableCategories, ...predefinedCategories])].sort();
+
+  // Helper function to handle navigation with error recovery
+  const handleNavigation = (path: string) => {
+    try {
+      navigate(path);
+    } catch (error) {
+      console.error('Navigation error:', error);
+      // Fallback: direct window navigation
+      window.location.href = path;
+    }
+  };
+
+  // Debug: Log current navigation status
+  useEffect(() => {
+    console.log('Transactions page loaded successfully');
+    console.log('Navigation available:', typeof navigate !== 'undefined');
+  }, []);
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-neutral-900">Transactions</h1>
-          <p className="text-neutral-500">Track income, expenses, and account transfers</p>
+          <p className="text-neutral-500">
+            Track income, expenses, and account transfers
+            {filteredTransactions.length !== transactions.length && (
+              <span className="ml-2 text-sm text-wood-600">
+                ({filteredTransactions.length} of {transactions.length} shown)
+              </span>
+            )}
+          </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-3">
           <button
             onClick={exportToCSV}
-            className="flex items-center gap-2 px-4 py-2 bg-neutral-100 text-neutral-700 rounded-lg hover:bg-neutral-200 transition-colors"
+            className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
           >
             <Download className="w-4 h-4" />
-            Export CSV
+            Export CSV ({filteredTransactions.length})
           </button>
           <button
             onClick={() => setShowModal(true)}
@@ -258,6 +443,139 @@ export default function Transactions() {
         </div>
       </div>
 
+      {/* Filter Section */}
+      <div className="bg-white rounded-xl shadow-sm border border-neutral-200 p-6">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <Filter className="w-5 h-5 text-wood-700" />
+            <h3 className="text-lg font-semibold text-neutral-900">Filter Transactions</h3>
+            {getActiveFiltersCount() > 0 && (
+              <span className="bg-wood-100 text-wood-700 text-xs px-2 py-1 rounded-full font-medium">
+                {getActiveFiltersCount()} active
+              </span>
+            )}
+          </div>
+          <button
+            onClick={clearFilters}
+            className="flex items-center gap-1 text-sm text-neutral-500 hover:text-neutral-700 px-2 py-1 rounded-lg hover:bg-neutral-100 transition-colors"
+          >
+            <RefreshCw className="w-4 h-4" />
+            Clear All ({getActiveFiltersCount()})
+          </button>
+        </div>
+        
+        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4">
+          {/* Search */}
+          <div className="relative">
+            <label className="block text-sm font-medium text-neutral-700 mb-1">Search</label>
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-neutral-400 w-4 h-4" />
+              <input
+                type="text"
+                placeholder="Search description, category..."
+                value={filters.search}
+                onChange={(e) => setFilters({...filters, search: e.target.value})}
+                className="w-full pl-10 pr-3 py-2 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-wood-500"
+              />
+            </div>
+          </div>
+
+          {/* Transaction Type */}
+          <div>
+            <label className="block text-sm font-medium text-neutral-700 mb-1">Transaction Type</label>
+            <select
+              value={filters.transactionType}
+              onChange={(e) => setFilters({...filters, transactionType: e.target.value})}
+              className="w-full px-3 py-2 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-wood-500"
+            >
+              <option value="">All Types</option>
+              <option value="income">Income</option>
+              <option value="expense">Expense</option>
+              <option value="transfer">Transfer</option>
+            </select>
+          </div>
+
+          {/* Category */}
+          <div>
+            <label className="block text-sm font-medium text-neutral-700 mb-1">Category</label>
+            <select
+              value={filters.category}
+              onChange={(e) => setFilters({...filters, category: e.target.value})}
+              className="w-full px-3 py-2 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-wood-500"
+            >
+              <option value="">All Categories</option>
+              {allCategories.map(category => (
+                <option key={category} value={category}>{category}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Account Name */}
+          <div>
+            <label className="block text-sm font-medium text-neutral-700 mb-1">Account</label>
+            <select
+              value={filters.accountName}
+              onChange={(e) => setFilters({...filters, accountName: e.target.value})}
+              className="w-full px-3 py-2 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-wood-500"
+            >
+              <option value="">All Accounts</option>
+              {accounts.map(account => (
+                <option key={account.id} value={account.account_name}>{account.account_name}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Date From */}
+          <div>
+            <label className="block text-sm font-medium text-neutral-700 mb-1">Date From</label>
+            <input
+              type="date"
+              value={filters.dateFrom}
+              onChange={(e) => setFilters({...filters, dateFrom: e.target.value})}
+              className="w-full px-3 py-2 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-wood-500"
+            />
+          </div>
+
+          {/* Date To */}
+          <div>
+            <label className="block text-sm font-medium text-neutral-700 mb-1">Date To</label>
+            <input
+              type="date"
+              value={filters.dateTo}
+              onChange={(e) => setFilters({...filters, dateTo: e.target.value})}
+              className="w-full px-3 py-2 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-wood-500"
+            />
+          </div>
+
+          {/* Min Amount */}
+          <div>
+            <label className="block text-sm font-medium text-neutral-700 mb-1">Min Amount (LKR)</label>
+            <input
+              type="number"
+              step="0.01"
+              placeholder="0.00"
+              value={filters.minAmount}
+              onChange={(e) => setFilters({...filters, minAmount: e.target.value})}
+              className="w-full px-3 py-2 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-wood-500"
+            />
+          </div>
+
+          {/* Max Amount */}
+          <div>
+            <label className="block text-sm font-medium text-neutral-700 mb-1">Max Amount (LKR)</label>
+            <input
+              type="number"
+              step="0.01"
+              placeholder="999999.99"
+              value={filters.maxAmount}
+              onChange={(e) => setFilters({...filters, maxAmount: e.target.value})}
+              className="w-full px-3 py-2 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-wood-500"
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Account Balances */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         {accounts.map(account => (
           <div key={account.id} className="bg-white rounded-xl shadow-sm border border-neutral-200 p-4">
@@ -270,99 +588,125 @@ export default function Transactions() {
         ))}
       </div>
 
+      {/* Debug Info (only show if accounts array is empty) */}
+      {accounts.length === 0 && !loading && (
+        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+          <p className="text-yellow-800 text-sm">
+            ⚠️ No accounts loaded. This might be a database connection issue.
+          </p>
+        </div>
+      )}
+
+      {/* Debug Info for transactions */}
+      {!loading && transactions.length === 0 && (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+          <p className="text-blue-800 text-sm">
+            ℹ️ No transactions found. You can add new transactions using the "New Transaction" button.
+          </p>
+        </div>
+      )}
+
+      {/* Debug Info for data counts */}
+      {accounts.length > 0 && transactions.length > 0 && (
+        <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+          <p className="text-green-700 text-xs">
+            📊 Debug: {accounts.length} accounts loaded, {transactions.length} transactions loaded, {filteredTransactions.length} after filtering
+          </p>
+        </div>
+      )}
+
+      {/* Transactions Table */}
       <div className="bg-white rounded-xl shadow-sm border border-neutral-200 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead className="bg-neutral-50 border-b border-neutral-200">
               <tr>
-                <th className="px-4 py-3 text-left text-xs font-medium text-neutral-500 uppercase">Date</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-neutral-500 uppercase">Type</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-neutral-500 uppercase">From/To</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-neutral-500 uppercase">Amount</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-neutral-500 uppercase">Category</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-neutral-500 uppercase">Description</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-neutral-500 uppercase">Actions</th>
+                <th className="text-left px-6 py-4 text-sm font-semibold text-neutral-900">Transaction ID</th>
+                <th className="text-left px-6 py-4 text-sm font-semibold text-neutral-900">Date</th>
+                <th className="text-left px-6 py-4 text-sm font-semibold text-neutral-900">Type</th>
+                <th className="text-left px-6 py-4 text-sm font-semibold text-neutral-900">From/To</th>
+                <th className="text-left px-6 py-4 text-sm font-semibold text-neutral-900">Amount</th>
+                <th className="text-left px-6 py-4 text-sm font-semibold text-neutral-900">Category</th>
+                <th className="text-left px-6 py-4 text-sm font-semibold text-neutral-900">Description</th>
+                <th className="text-right px-6 py-4 text-sm font-semibold text-neutral-900">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-200">
               {loading ? (
-                <tr><td colSpan={7} className="px-4 py-8 text-center text-neutral-500">Loading...</td></tr>
-              ) : transactions.length === 0 ? (
-                <tr><td colSpan={7} className="px-4 py-8 text-center text-neutral-500">No transactions yet</td></tr>
+                <tr>
+                  <td colSpan={8} className="px-6 py-8 text-center text-neutral-500">
+                    Loading transactions...
+                  </td>
+                </tr>
+              ) : filteredTransactions.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="px-6 py-8 text-center text-neutral-500">
+                    No transactions found
+                  </td>
+                </tr>
               ) : (
-                transactions.map((txn) => (
-                  <tr key={txn.id} className="hover:bg-neutral-50">
-                    <td className="px-4 py-3">{new Date(txn.transaction_date).toLocaleDateString()}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        {txn.transaction_type === 'income' ? (
-                          <ArrowUpRight className="w-4 h-4 text-green-600" />
-                        ) : txn.transaction_type === 'expense' ? (
-                          <ArrowDownRight className="w-4 h-4 text-red-600" />
+                filteredTransactions.map(transaction => (
+                  <tr key={transaction.id} className="hover:bg-neutral-50">
+                    <td className="px-6 py-4 text-sm text-neutral-900">
+                      {transaction.transaction_number || transaction.id.slice(0, 8)}
+                    </td>
+                    <td className="px-6 py-4 text-sm text-neutral-500">
+                      {new Date(transaction.transaction_date).toLocaleDateString()}
+                    </td>
+                    <td className="px-6 py-4 text-sm">
+                      <span className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${
+                        transaction.transaction_type === 'income' 
+                          ? 'bg-green-100 text-green-700'
+                          : transaction.transaction_type === 'expense'
+                          ? 'bg-red-100 text-red-700'
+                          : 'bg-blue-100 text-blue-700'
+                      }`}>
+                        {transaction.transaction_type}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 text-sm">
+                      <div className="space-y-1">
+                        {transaction.transaction_type === 'transfer' ? (
+                          <>
+                            <div className="text-red-600">→ {transaction.to_account_name}</div>
+                            <div className="text-green-600">← {transaction.from_account_name}</div>
+                          </>
                         ) : (
-                          <RefreshCw className="w-4 h-4 text-blue-600" />
+                          <div className="text-neutral-900">
+                            {transaction.from_account_name || transaction.to_account_name}
+                          </div>
                         )}
-                        <span className="capitalize">{txn.transaction_type}</span>
                       </div>
                     </td>
-                    <td className="px-4 py-3">
-                      {txn.transaction_type === 'transfer' 
-                        ? `${txn.from_account_name} → ${txn.to_account_name}`
-                        : txn.from_account_name || txn.to_account_name || '-'}
+                    <td className="px-6 py-4 text-sm font-medium">
+                      <span className={transaction.transaction_type === 'income' ? 'text-green-600' : 'text-red-600'}>
+                        {transaction.transaction_type === 'income' ? '+' : '-'}{formatCurrency(transaction.amount_minor)}
+                      </span>
                     </td>
-                    <td className={`px-4 py-3 font-medium ${
-                      txn.transaction_type === 'income' ? 'text-green-600' : 
-                      txn.transaction_type === 'expense' ? 'text-red-600' : 
-                      'text-blue-600'
-                    }`}>
-                      {formatCurrency(txn.amount_minor)}
+                    <td className="px-6 py-4 text-sm text-neutral-500">
+                      {transaction.category || '-'}
                     </td>
-                    <td className="px-4 py-3">
-                      {(txn.category === 'profit_distribution' || txn.reference_type === 'profit_share') ? (
-                        <span className="inline-flex items-center px-2 py-1 text-xs font-medium bg-purple-100 text-purple-700 rounded-full">
-                          Profit Distribution
-                        </span>
-                      ) : txn.category ? (
-                        <span className="inline-flex items-center px-2 py-1 text-xs font-medium bg-neutral-100 text-neutral-700 rounded-full capitalize">
-                          {txn.category}
-                        </span>
-                      ) : '-'}
+                    <td className="px-6 py-4 text-sm text-neutral-500">
+                      {transaction.description || '-'}
                     </td>
-                    <td className="px-4 py-3">
-                      {txn.description ? (
-                        <div className="max-w-xs">
-                          <div 
-                            className="text-sm text-neutral-600 truncate" 
-                            title={txn.description}
-                          >
-                            {txn.description}
-                          </div>
-                          {txn.description.length > 50 && (
-                            <div className="text-xs text-neutral-400 italic">
-                              (hover to see full description)
-                            </div>
-                          )}
-                        </div>
-                      ) : '-'}
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        {(txn.category === 'profit_distribution' || txn.reference_type === 'profit_share') ? (
-                          <span 
-                            className="px-2 py-1 text-xs bg-purple-100 text-purple-700 rounded-full cursor-help" 
-                            title="This transaction was automatically created when an order was completed"
-                          >
-                            System
-                          </span>
-                        ) : (
-                          <button
-                            onClick={() => handleDeleteTransaction(txn.id)}
-                            className="p-1 text-red-600 hover:bg-red-50 rounded"
-                            title="Delete transaction"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        )}
+                    <td className="px-6 py-4 text-right">
+                      <div className="flex justify-end gap-2">
+                        <button
+                          onClick={() => {
+                            setTransactionType(transaction.transaction_type);
+                            // You'd populate modal with transaction data for editing
+                            setShowModal(true);
+                          }}
+                          className="text-wood-600 hover:text-wood-800 text-sm"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => handleDeleteTransaction(transaction)}
+                          className="text-red-600 hover:text-red-800 text-sm"
+                        >
+                          Delete
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -384,306 +728,6 @@ export default function Transactions() {
       )}
     </div>
   );
-}
+};
 
-function TransactionModal({ accounts, transactionType, setTransactionType, onSave, onClose }: any) {
-  const [formData, setFormData] = useState({
-    transaction_date: new Date().toISOString().split('T')[0],
-    transaction_type: transactionType,
-    from_account_id: null,
-    to_account_id: null,
-    amount: 0,
-    category: '',
-    description: '',
-    payment_method: 'cash',
-  });
-
-  return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-      <div className="bg-white rounded-xl max-w-2xl w-full">
-        <div className="border-b border-neutral-200 px-6 py-4">
-          <h2 className="text-xl font-bold">New Transaction</h2>
-        </div>
-        <div className="p-6 space-y-4">
-          <div className="flex gap-2">
-            {['income', 'expense', 'transfer'].map(type => (
-              <button
-                key={type}
-                onClick={() => {
-                  setTransactionType(type);
-                  setFormData({ 
-                    ...formData, 
-                    transaction_type: type,
-                    from_account_id: null,
-                    to_account_id: null
-                  });
-                }}
-                className={`flex-1 px-4 py-2 rounded-lg font-medium capitalize ${
-                  formData.transaction_type === type
-                    ? 'bg-wood-700 text-white'
-                    : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
-                }`}
-              >
-                {type}
-              </button>
-            ))}
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-neutral-700 mb-1">Date</label>
-            <input
-              type="date"
-              value={formData.transaction_date}
-              onChange={(e) => setFormData({ ...formData, transaction_date: e.target.value })}
-              className="w-full px-3 py-2 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-wood-500"
-              required
-            />
-          </div>
-          {formData.transaction_type === 'transfer' ? (
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-neutral-700 mb-1">From Account</label>
-                <select
-                  value={formData.from_account_id || ''}
-                  onChange={(e) => setFormData({ ...formData, from_account_id: e.target.value || null })}
-                  className="w-full px-3 py-2 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-wood-500"
-                  required
-                >
-                  <option value="">Select account</option>
-                  {accounts.map((a: Account) => (
-                    <option key={a.id} value={a.id}>{a.account_name}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-neutral-700 mb-1">To Account</label>
-                <select
-                  value={formData.to_account_id || ''}
-                  onChange={(e) => setFormData({ ...formData, to_account_id: e.target.value || null })}
-                  className="w-full px-3 py-2 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-wood-500"
-                  required
-                >
-                  <option value="">Select account</option>
-                  {accounts.map((a: Account) => (
-                    <option key={a.id} value={a.id}>{a.account_name}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          ) : (
-            <div>
-              <label className="block text-sm font-medium text-neutral-700 mb-1">
-                {formData.transaction_type === 'income' ? 'To Account' : 'From Account'}
-              </label>
-              <select
-                value={formData.transaction_type === 'income' ? (formData.to_account_id || '') : (formData.from_account_id || '')}
-                onChange={(e) => setFormData({ 
-                  ...formData, 
-                  [formData.transaction_type === 'income' ? 'to_account_id' : 'from_account_id']: e.target.value || null 
-                })}
-                className="w-full px-3 py-2 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-wood-500"
-                required
-              >
-                <option value="">Select account</option>
-                {accounts.map((a: Account) => (
-                  <option key={a.id} value={a.id}>{a.account_name}</option>
-                ))}
-              </select>
-            </div>
-          )}
-          <div>
-            <label className="block text-sm font-medium text-neutral-700 mb-1">Amount (LKR)</label>
-            <input
-              type="number"
-              step="0.01"
-              value={formData.amount}
-              onChange={(e) => setFormData({ ...formData, amount: parseFloat(e.target.value) || 0 })}
-              className="w-full px-3 py-2 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-wood-500"
-              required
-            />
-          </div>
-          <CategoryDropdown
-            value={formData.category}
-            onChange={(category) => setFormData({ ...formData, category })}
-          />
-          <div>
-            <label className="block text-sm font-medium text-neutral-700 mb-1">Description</label>
-            <textarea
-              value={formData.description}
-              onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-              rows={2}
-              className="w-full px-3 py-2 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-wood-500"
-            />
-          </div>
-        </div>
-        <div className="bg-neutral-50 border-t border-neutral-200 px-6 py-4 flex justify-end gap-3">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 text-neutral-700 hover:bg-neutral-200 rounded-lg transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={() => {
-              // Validate form before submission
-              if (!formData.amount || formData.amount <= 0) {
-                alert('Please enter a valid amount');
-                return;
-              }
-              
-              // Validate account selection based on transaction type
-              if (formData.transaction_type === 'income' && !formData.to_account_id) {
-                alert('Please select a destination account for income');
-                return;
-              }
-              
-              if (formData.transaction_type === 'expense' && !formData.from_account_id) {
-                alert('Please select a source account for expense');
-                return;
-              }
-              
-              if (formData.transaction_type === 'transfer' && (!formData.from_account_id || !formData.to_account_id)) {
-                alert('Please select both source and destination accounts for transfer');
-                return;
-              }
-              
-              onSave({ ...formData, amount_minor: toMinor(formData.amount) });
-            }}
-            disabled={!formData.amount}
-            className="px-4 py-2 bg-wood-700 text-white rounded-lg hover:bg-wood-800 transition-colors disabled:opacity-50"
-          >
-            Create Transaction
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function CategoryDropdown({ value, onChange }: { value: string; onChange: (category: string) => void }) {
-  const [isOpen, setIsOpen] = useState(false);
-  const [categories, setCategories] = useState<string[]>([]);
-  const [newCategory, setNewCategory] = useState('');
-
-  // Common categories for transactions
-  const commonCategories = [
-    'Materials',
-    'Labor',
-    'Sales',
-    'Utilities',
-    'Rent',
-    'Transportation',
-    'Office Supplies',
-    'Marketing',
-    'Equipment',
-    'Insurance',
-    'Taxes',
-    'Maintenance',
-    'Consulting',
-    'Commission',
-    'Revenue',
-    'Service Fee',
-    'Interest',
-    'Investment',
-    'Dividend',
-    'Other'
-  ];
-
-  useEffect(() => {
-    // Load existing categories from transactions
-    const loadCategories = async () => {
-      const { data } = await supabase
-        .from('transactions')
-        .select('category')
-        .not('category', 'is', null);
-      
-      if (data) {
-        const existingCategories = data
-          .map(t => t.category)
-          .filter((category): category is string => category !== null)
-          .filter((category, index, arr) => arr.indexOf(category) === index)
-          .sort();
-        setCategories([...new Set([...commonCategories, ...existingCategories])]);
-      }
-    };
-    loadCategories();
-  }, []);
-
-  const handleCreateCategory = () => {
-    if (newCategory.trim() && !categories.includes(newCategory.trim())) {
-      const updatedCategories = [...categories, newCategory.trim()].sort();
-      setCategories(updatedCategories);
-    }
-    onChange(newCategory.trim());
-    setNewCategory('');
-    setIsOpen(false);
-  };
-
-  const handleSelectCategory = (category: string) => {
-    onChange(category);
-    setIsOpen(false);
-  };
-
-  return (
-    <div className="relative">
-      <label className="block text-sm font-medium text-neutral-700 mb-1">Category</label>
-      <div className="relative">
-        <input
-          type="text"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder="Select or enter category"
-          className="w-full px-3 py-2 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-wood-500 pr-10"
-          onFocus={() => setIsOpen(true)}
-          readOnly
-        />
-        <div className="absolute inset-y-0 right-0 flex items-center pr-3">
-          <svg className="w-4 h-4 text-neutral-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-          </svg>
-        </div>
-      </div>
-      
-      {isOpen && (
-        <div className="absolute z-10 w-full mt-1 bg-white border border-neutral-300 rounded-lg shadow-lg max-h-60 overflow-auto">
-          {categories.map((category) => (
-            <div
-              key={category}
-              onClick={() => handleSelectCategory(category)}
-              className="px-3 py-2 hover:bg-neutral-50 cursor-pointer text-sm"
-            >
-              {category}
-            </div>
-          ))}
-          <div className="border-t border-neutral-200 p-2">
-            <div className="text-xs text-neutral-500 mb-1">Add new category:</div>
-            <div className="flex gap-1">
-              <input
-                type="text"
-                value={newCategory}
-                onChange={(e) => setNewCategory(e.target.value)}
-                placeholder="New category name"
-                className="flex-1 px-2 py-1 text-sm border border-neutral-300 rounded focus:outline-none focus:ring-1 focus:ring-wood-500"
-                onKeyPress={(e) => e.key === 'Enter' && handleCreateCategory()}
-              />
-              <button
-                onClick={handleCreateCategory}
-                disabled={!newCategory.trim()}
-                className="px-2 py-1 text-xs bg-wood-700 text-white rounded hover:bg-wood-800 disabled:opacity-50"
-              >
-                Add
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      
-      {/* Overlay to close dropdown when clicking outside */}
-      {isOpen && (
-        <div 
-          className="fixed inset-0 z-5" 
-          onClick={() => setIsOpen(false)}
-        />
-      )}
-    </div>
-  );
-}
+export default Transactions;
