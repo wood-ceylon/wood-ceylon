@@ -1,0 +1,493 @@
+import React, { useEffect, useState } from 'react';
+import { supabase, formatCurrency } from '../lib/supabase';
+import { Product } from '../lib/types';
+import { Plus, Edit, Trash2, Package } from 'lucide-react';
+import { format } from 'date-fns';
+import toast from 'react-hot-toast';
+
+interface InventoryBatch {
+  id: string;
+  product_id: string;
+  quantity: number;
+  labor_cost_minor: number;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  product_name?: string;
+}
+
+export default function InventoryPage() {
+  const [batches, setBatches] = useState<InventoryBatch[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showModal, setShowModal] = useState(false);
+  const [editingBatch, setEditingBatch] = useState<InventoryBatch | null>(null);
+
+  useEffect(() => {
+    loadBatches();
+    loadProducts();
+  }, []);
+
+  async function loadBatches() {
+    const { data, error } = await supabase
+      .from('inventory_batches')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Error loading batches:', error);
+      if (error.message.includes('inventory_batches')) {
+        toast.error('Database table not found. Please contact administrator to apply migration.', {
+          duration: 6000
+        });
+      }
+      setLoading(false);
+      return;
+    }
+
+    if (data) {
+      const batchesWithProducts = await Promise.all(
+        data.map(async (batch) => {
+          const { data: product } = await supabase
+            .from('products')
+            .select('name')
+            .eq('id', batch.product_id)
+            .maybeSingle();
+          
+          return {
+            ...batch,
+            product_name: product?.name || 'Unknown Product'
+          };
+        })
+      );
+      setBatches(batchesWithProducts);
+    }
+    setLoading(false);
+  }
+
+  async function loadProducts() {
+    const { data } = await supabase
+      .from('products')
+      .select('*')
+      .eq('is_active', true)
+      .order('name');
+    if (data) setProducts(data);
+  }
+
+  async function handleSaveBatch(batchData: Partial<InventoryBatch>) {
+    try {
+      if (editingBatch) {
+        const { error } = await supabase
+          .from('inventory_batches')
+          .update({
+            ...batchData,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', editingBatch.id);
+        
+        if (error) throw error;
+        toast.success('Batch updated successfully');
+      } else {
+        const { error } = await supabase
+          .from('inventory_batches')
+          .insert({
+            ...batchData,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          });
+        
+        if (error) throw error;
+        toast.success('Batch added successfully');
+      }
+      await loadBatches();
+      setShowModal(false);
+      setEditingBatch(null);
+    } catch (error: any) {
+      console.error('Error saving batch:', error);
+      if (error.message && error.message.includes('inventory_batches')) {
+        toast.error('Database table not found. Please contact administrator to apply migration.', {
+          duration: 6000
+        });
+      } else {
+        toast.error('Failed to save batch: ' + (error.message || 'Unknown error'));
+      }
+    }
+  }
+
+  async function handleDeleteBatch(id: string) {
+    if (!confirm('Are you sure you want to delete this batch?')) return;
+    
+    try {
+      await supabase
+        .from('inventory_batches')
+        .delete()
+        .eq('id', id);
+      
+      await loadBatches();
+      toast.success('Batch deleted successfully');
+    } catch (error) {
+      console.error('Error deleting batch:', error);
+      toast.error('Failed to delete batch');
+    }
+  }
+
+  // Calculate totals by product
+  const productTotals = batches.reduce((acc, batch) => {
+    const key = batch.product_id;
+    if (!acc[key]) {
+      acc[key] = {
+        product_name: batch.product_name || '',
+        total_quantity: 0,
+        total_labor_cost: 0,
+        batch_count: 0
+      };
+    }
+    acc[key].total_quantity += batch.quantity;
+    acc[key].total_labor_cost += batch.labor_cost_minor;
+    acc[key].batch_count += 1;
+    return acc;
+  }, {} as Record<string, { product_name: string; total_quantity: number; total_labor_cost: number; batch_count: number }>);
+
+  // Grand totals
+  const grandTotalQuantity = batches.reduce((sum, b) => sum + b.quantity, 0);
+  const grandTotalLaborCost = batches.reduce((sum, b) => sum + b.labor_cost_minor, 0);
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-neutral-900">Batch Inventory</h1>
+          <p className="text-neutral-500">Simple batch-based inventory tracking</p>
+        </div>
+        <button
+          onClick={() => {
+            setEditingBatch(null);
+            setShowModal(true);
+          }}
+          className="flex items-center gap-2 px-4 py-2 bg-wood-700 text-white rounded-lg hover:bg-wood-800 transition-colors"
+        >
+          <Plus className="w-4 h-4" />
+          Add Batch
+        </button>
+      </div>
+
+      {/* Summary Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-neutral-200">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-neutral-500">Total Batches</p>
+              <p className="text-2xl font-bold text-neutral-900 mt-1">
+                {batches.length}
+              </p>
+            </div>
+            <div className="p-3 bg-blue-50 rounded-lg">
+              <Package className="w-6 h-6 text-blue-600" />
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-neutral-200">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-neutral-500">Total Quantity</p>
+              <p className="text-2xl font-bold text-neutral-900 mt-1">
+                {grandTotalQuantity}
+              </p>
+            </div>
+            <div className="p-3 bg-green-50 rounded-lg">
+              <Package className="w-6 h-6 text-green-600" />
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-neutral-200">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-neutral-500">Total Labor Cost</p>
+              <p className="text-2xl font-bold text-wood-700 mt-1">
+                {formatCurrency(grandTotalLaborCost)}
+              </p>
+            </div>
+            <div className="p-3 bg-wood-50 rounded-lg">
+              <Package className="w-6 h-6 text-wood-600" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Product Summary Table */}
+      <div className="bg-white rounded-xl shadow-sm border border-neutral-200 overflow-hidden">
+        <div className="px-6 py-4 border-b bg-neutral-50">
+          <h2 className="text-lg font-semibold text-neutral-900">Product Totals</h2>
+        </div>
+        <table className="w-full">
+          <thead className="bg-neutral-50 border-b">
+            <tr>
+              <th className="px-4 py-3 text-left text-xs font-medium text-neutral-500 uppercase">Product</th>
+              <th className="px-4 py-3 text-center text-xs font-medium text-neutral-500 uppercase">Batches</th>
+              <th className="px-4 py-3 text-right text-xs font-medium text-neutral-500 uppercase">Total Quantity</th>
+              <th className="px-4 py-3 text-right text-xs font-medium text-neutral-500 uppercase">Total Labor Cost</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {Object.entries(productTotals).map(([productId, totals]) => (
+              <tr key={productId} className="hover:bg-neutral-50">
+                <td className="px-4 py-3 font-medium">{totals.product_name}</td>
+                <td className="px-4 py-3 text-center">{totals.batch_count}</td>
+                <td className="px-4 py-3 text-right font-bold">{totals.total_quantity}</td>
+                <td className="px-4 py-3 text-right font-medium text-wood-700">
+                  {formatCurrency(totals.total_labor_cost)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {Object.keys(productTotals).length === 0 && (
+          <div className="text-center py-12 text-neutral-500">
+            No inventory batches yet. Add your first batch to get started.
+          </div>
+        )}
+      </div>
+
+      {/* Batch Details Table */}
+      <div className="bg-white rounded-xl shadow-sm border border-neutral-200 overflow-hidden">
+        <div className="px-6 py-4 border-b bg-neutral-50">
+          <h2 className="text-lg font-semibold text-neutral-900">All Batches</h2>
+        </div>
+        <table className="w-full">
+          <thead className="bg-neutral-50 border-b">
+            <tr>
+              <th className="px-4 py-3 text-left text-xs font-medium text-neutral-500 uppercase">Product</th>
+              <th className="px-4 py-3 text-right text-xs font-medium text-neutral-500 uppercase">Quantity</th>
+              <th className="px-4 py-3 text-right text-xs font-medium text-neutral-500 uppercase">Per Item Cost</th>
+              <th className="px-4 py-3 text-right text-xs font-medium text-neutral-500 uppercase">Total Labor Cost</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-neutral-500 uppercase">Added</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-neutral-500 uppercase">Updated</th>
+              <th className="px-4 py-3 text-center text-xs font-medium text-neutral-500 uppercase">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {batches.map((batch) => {
+              const perItemCost = batch.quantity > 0 ? batch.labor_cost_minor / batch.quantity : 0;
+              return (
+              <tr key={batch.id} className="hover:bg-neutral-50">
+                <td className="px-4 py-3">
+                  <div>
+                    <div className="font-medium">{batch.product_name}</div>
+                    {batch.notes && (
+                      <div className="text-xs text-neutral-500 mt-1">{batch.notes}</div>
+                    )}
+                  </div>
+                </td>
+                <td className="px-4 py-3 text-right font-bold">{batch.quantity}</td>
+                <td className="px-4 py-3 text-right text-sm text-neutral-600">
+                  {formatCurrency(perItemCost)}
+                </td>
+                <td className="px-4 py-3 text-right font-medium text-wood-700">
+                  {formatCurrency(batch.labor_cost_minor)}
+                </td>
+                <td className="px-4 py-3 text-sm text-neutral-600">
+                  {format(new Date(batch.created_at), 'MMM dd, yyyy')}
+                </td>
+                <td className="px-4 py-3 text-sm text-neutral-600">
+                  {format(new Date(batch.updated_at), 'MMM dd, yyyy HH:mm')}
+                </td>
+                <td className="px-4 py-3">
+                  <div className="flex justify-center gap-2">
+                    <button
+                      onClick={() => {
+                        setEditingBatch(batch);
+                        setShowModal(true);
+                      }}
+                      className="p-1 text-wood-600 hover:bg-wood-50 rounded"
+                    >
+                      <Edit className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => handleDeleteBatch(batch.id)}
+                      className="p-1 text-red-600 hover:bg-red-50 rounded"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        {batches.length === 0 && (
+          <div className="text-center py-12 text-neutral-500">
+            No batches added yet.
+          </div>
+        )}
+      </div>
+
+      {showModal && (
+        <BatchModal
+          batch={editingBatch}
+          products={products}
+          onSave={handleSaveBatch}
+          onClose={() => {
+            setShowModal(false);
+            setEditingBatch(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function BatchModal({ batch, products, onSave, onClose }: {
+  batch: InventoryBatch | null;
+  products: Product[];
+  onSave: (data: Partial<InventoryBatch>) => void;
+  onClose: () => void;
+}) {
+  const [formData, setFormData] = useState({
+    product_id: batch?.product_id || '',
+    quantity: batch?.quantity || 0,
+    labor_cost_per_item: batch && batch.quantity > 0 ? (batch.labor_cost_minor / 100) / batch.quantity : 0,
+    notes: batch?.notes || ''
+  });
+
+  // Calculate total labor cost
+  const totalLaborCost = formData.quantity > 0 ? formData.quantity * formData.labor_cost_per_item : 0;
+
+  const handleQuantityChange = (value: number) => {
+    setFormData({ ...formData, quantity: value });
+  };
+
+  const handlePerItemCostChange = (value: number) => {
+    setFormData({ ...formData, labor_cost_per_item: value });
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formData.product_id || formData.quantity <= 0) {
+      toast.error('Please select a product and enter a valid quantity');
+      return;
+    }
+    if (formData.labor_cost_per_item < 0) {
+      toast.error('Labor cost per item cannot be negative');
+      return;
+    }
+    onSave({
+      product_id: formData.product_id,
+      quantity: formData.quantity,
+      labor_cost_minor: Math.round(totalLaborCost * 100),
+      notes: formData.notes
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+      <div className="bg-white rounded-xl max-w-lg w-full">
+        <div className="border-b px-6 py-4">
+          <h2 className="text-xl font-bold text-neutral-900">
+            {batch ? 'Edit Batch' : 'Add New Batch'}
+          </h2>
+          <p className="text-sm text-neutral-500 mt-1">
+            Enter quantity and per-item labor cost for automatic total calculation
+          </p>
+        </div>
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-neutral-700 mb-1">
+              Product <span className="text-red-500">*</span>
+            </label>
+            <select
+              value={formData.product_id}
+              onChange={(e) => setFormData({ ...formData, product_id: e.target.value })}
+              className="w-full px-3 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-wood-500"
+              required
+              disabled={!!batch}
+            >
+              <option value="">Select a product</option>
+              {products.map((product) => (
+                <option key={product.id} value={product.id}>{product.name}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-neutral-700 mb-1">
+                Quantity <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="number"
+                min="1"
+                value={formData.quantity || ''}
+                onChange={(e) => handleQuantityChange(parseInt(e.target.value) || 0)}
+                className="w-full px-3 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-wood-500"
+                placeholder="0"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-neutral-700 mb-1">
+                Labor Cost Per Item (LKR) <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={formData.labor_cost_per_item || ''}
+                onChange={(e) => handlePerItemCostChange(parseFloat(e.target.value) || 0)}
+                className="w-full px-3 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-wood-500"
+                placeholder="0.00"
+                required
+              />
+            </div>
+          </div>
+
+          {/* Calculation Display */}
+          <div className="bg-wood-50 border border-wood-200 rounded-lg p-4">
+            <div className="flex justify-between items-center">
+              <div className="text-sm text-neutral-700">
+                <span className="font-medium">{formData.quantity || 0} items</span>
+                <span className="mx-2">×</span>
+                <span className="font-medium">LKR {formData.labor_cost_per_item.toFixed(2)} per item</span>
+              </div>
+              <div className="text-right">
+                <div className="text-xs text-neutral-500">Total Labor Cost</div>
+                <div className="text-lg font-bold text-wood-700">
+                  LKR {totalLaborCost.toFixed(2)}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-neutral-700 mb-1">Notes</label>
+            <textarea
+              value={formData.notes}
+              onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
+              rows={3}
+              placeholder="Optional notes about this batch..."
+              className="w-full px-3 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-wood-500"
+            />
+          </div>
+        </form>
+        <div className="bg-neutral-50 border-t px-6 py-4 flex justify-end gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 text-neutral-700 hover:bg-neutral-200 rounded-lg transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSubmit}
+            className="px-4 py-2 bg-wood-700 text-white rounded-lg hover:bg-wood-800 transition-colors"
+          >
+            {batch ? 'Update Batch' : 'Add Batch'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
