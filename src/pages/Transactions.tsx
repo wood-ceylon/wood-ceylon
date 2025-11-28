@@ -170,7 +170,7 @@ const Transactions: React.FC = () => {
   }
 
   function exportToCSV() {
-    const headers = ['Transaction ID', 'Date', 'Type', 'From Account', 'To Account', 'Amount (LKR)', 'Category', 'Description'];
+    const headers = ['Transaction ID', 'Date', 'Type', 'From Account', 'To Account', 'Amount (LKR)', 'Category', 'Payment Method', 'Description'];
     const rows = filteredTransactions.map(txn => [
       txn.transaction_number || '',
       new Date(txn.transaction_date).toLocaleDateString(),
@@ -179,6 +179,7 @@ const Transactions: React.FC = () => {
       txn.to_account_name || '',
       fromMinor(txn.amount_minor).toFixed(2),
       txn.category || '',
+      txn.payment_method || 'cash',
       txn.description || ''
     ]);
 
@@ -193,10 +194,10 @@ const Transactions: React.FC = () => {
       ...[headers],
       ...rows,
       [],
-      [`SUMMARY`, '', '', '', '', '', '', ''],
-      [`Total Income:`, '', '', '', '', totalIncome.toFixed(2), '', ''],
-      [`Total Expense:`, '', '', '', '', totalExpense.toFixed(2), '', ''],
-      [`Net Amount:`, '', '', '', '', (totalIncome - totalExpense).toFixed(2), '', '']
+      [`SUMMARY`, '', '', '', '', '', '', '', ''],
+      [`Total Income:`, '', '', '', '', totalIncome.toFixed(2), '', '', ''],
+      [`Total Expense:`, '', '', '', '', totalExpense.toFixed(2), '', '', ''],
+      [`Net Amount:`, '', '', '', '', (totalIncome - totalExpense).toFixed(2), '', '', '']
     ].map(row => row.join(',')).join('\n');
 
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -355,6 +356,12 @@ const Transactions: React.FC = () => {
 
   async function handleDeleteTransaction(transaction: Transaction) {
     if (!transaction) return;
+
+    // Check if transaction is a profit share transaction (non-deletable)
+    if (transaction.reference_type === 'profit_share') {
+      alert('This transaction cannot be deleted because it is part of profit sharing. Profit share transactions are automatically created and maintained by the system.');
+      return;
+    }
 
     if (!confirm('Are you sure you want to delete this transaction?')) return;
 
@@ -794,6 +801,7 @@ const Transactions: React.FC = () => {
                 <th className="text-left px-6 py-4 text-sm font-semibold text-neutral-900">From/To</th>
                 <th className="text-left px-6 py-4 text-sm font-semibold text-neutral-900">Amount</th>
                 <th className="text-left px-6 py-4 text-sm font-semibold text-neutral-900">Category</th>
+                <th className="text-left px-6 py-4 text-sm font-semibold text-neutral-900">Payment Method</th>
                 <th className="text-left px-6 py-4 text-sm font-semibold text-neutral-900">Description</th>
                 <th className="text-right px-6 py-4 text-sm font-semibold text-neutral-900">Actions</th>
               </tr>
@@ -801,19 +809,19 @@ const Transactions: React.FC = () => {
             <tbody className="divide-y divide-neutral-200">
               {loading ? (
                 <tr>
-                  <td colSpan={8} className="px-6 py-8 text-center text-neutral-500">
+                  <td colSpan={9} className="px-6 py-8 text-center text-neutral-500">
                     Loading transactions...
                   </td>
                 </tr>
               ) : filteredTransactions.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-6 py-8 text-center text-neutral-500">
+                  <td colSpan={9} className="px-6 py-8 text-center text-neutral-500">
                     No transactions found
                   </td>
                 </tr>
               ) : (
                 filteredTransactions.map(transaction => (
-                  <tr key={transaction.id} className="hover:bg-neutral-50">
+                  <tr key={transaction.id} className={`hover:bg-neutral-50 ${transaction.reference_type === 'profit_share' ? 'bg-blue-50/30' : ''}`}>
                     <td className="px-6 py-4 text-sm text-neutral-900">
                       {transaction.transaction_number || transaction.id.slice(0, 8)}
                     </td>
@@ -851,7 +859,19 @@ const Transactions: React.FC = () => {
                       </span>
                     </td>
                     <td className="px-6 py-4 text-sm text-neutral-500">
-                      {transaction.category || '-'}
+                      <div className="flex items-center gap-2">
+                        <span>{transaction.category || '-'}</span>
+                        {transaction.reference_type === 'profit_share' && (
+                          <span className="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded-full font-medium">
+                            Profit Share
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 text-sm text-neutral-500">
+                      <span className="capitalize">
+                        {transaction.payment_method ? transaction.payment_method.replace('_', ' ') : 'Cash'}
+                      </span>
                     </td>
                     <td className="px-6 py-4 text-sm text-neutral-500">
                       {transaction.description || '-'}
@@ -868,12 +888,19 @@ const Transactions: React.FC = () => {
                         >
                           Edit
                         </button>
-                        <button
-                          onClick={() => handleDeleteTransaction(transaction)}
-                          className="text-red-600 hover:text-red-800 text-sm"
-                        >
-                          Delete
-                        </button>
+                        {transaction.reference_type !== 'profit_share' && (
+                          <button
+                            onClick={() => handleDeleteTransaction(transaction)}
+                            className="text-red-600 hover:text-red-800 text-sm"
+                          >
+                            Delete
+                          </button>
+                        )}
+                        {transaction.reference_type === 'profit_share' && (
+                          <span className="text-xs text-neutral-400 px-2 py-1 bg-neutral-100 rounded">
+                            Profit Share
+                          </span>
+                        )}
                       </div>
                     </td>
                   </tr>
