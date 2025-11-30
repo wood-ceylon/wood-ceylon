@@ -236,12 +236,23 @@ export default function Orders() {
       }
 
       // Call profit distribution if order is completed and fully paid
+      // Only distribute profit if it hasn't been distributed already
       if (orderData.status === 'completed') {
         const remainingPayment = (orderData.total_amount_minor || 0) - (orderData.paid_amount_minor || 0);
         if (remainingPayment === 0) {
-          await supabase.functions.invoke('distribute-profit', {
-            body: { order_id: orderId }
-          });
+          // Check if profit has already been distributed for this order
+          const { data: existingDistribution } = await supabase
+            .from('profit_distributions')
+            .select('id, is_distributed')
+            .eq('order_id', orderId)
+            .single();
+
+          // Only distribute profit if it hasn't been distributed yet
+          if (!existingDistribution || !existingDistribution.is_distributed) {
+            await supabase.functions.invoke('distribute-profit', {
+              body: { order_id: orderId }
+            });
+          }
         }
       }
 
@@ -295,6 +306,28 @@ export default function Orders() {
       if (profitError) {
         console.error('Error deleting profit distributions:', profitError);
         // Continue with order deletion even if profit distributions deletion fails
+      }
+      
+      // Delete worker payment records (labor costs) for this order
+      const { error: workerError } = await supabase
+        .from('worker_payment_records')
+        .delete()
+        .eq('order_id', id);
+      
+      if (workerError) {
+        console.error('Error deleting worker payment records:', workerError);
+        // Continue with order deletion even if worker payment records deletion fails
+      }
+      
+      // Delete order items for this order
+      const { error: itemsError } = await supabase
+        .from('order_items')
+        .delete()
+        .eq('order_id', id);
+      
+      if (itemsError) {
+        console.error('Error deleting order items:', itemsError);
+        // Continue with order deletion even if order items deletion fails
       }
       
       // Finally, deactivate the order
