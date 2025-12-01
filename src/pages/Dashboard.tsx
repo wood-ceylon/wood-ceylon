@@ -54,7 +54,7 @@ interface DashboardData {
   totalBusinessExpenses: number;
 }
 
-const COLORS = ['#6D4C41', '#5C4033', '#4E342E', '#3E2723'];
+const COLORS = ['#5C4033', '#6D4C41', '#8D6E63', '#BCAAA4'];
 
 export default function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
@@ -137,20 +137,17 @@ export default function Dashboard() {
         }
       }
 
-      // Calculate monthly stats with improved date handling
-      const now = new Date();
-      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-      const startOfMonthStr = startOfMonth.toISOString().split('T')[0];
-      
+      // Calculate monthly stats
+      const startOfMonth = new Date();
+      startOfMonth.setDate(1);
+      startOfMonth.setHours(0, 0, 0, 0);
+
       const { data: monthlyOrders } = await supabase
         .from('orders')
-        .select('total_amount_minor, total_labor_cost_minor, total_material_cost_minor, shipping_cost_minor, other_cost_minor, status, order_date')
-        .gte('order_date', startOfMonthStr)
+        .select('total_amount_minor, total_labor_cost_minor, total_material_cost_minor, shipping_cost_minor, other_cost_minor, status')
+        .gte('order_date', startOfMonth.toISOString().split('T')[0])
         .eq('is_active', true);
 
-      // Debug log to see what we're getting
-      console.log('Monthly orders data:', monthlyOrders);
-      
       const monthlyRevenue = monthlyOrders?.reduce((sum, o) => sum + (o.total_amount_minor || 0), 0) || 0;
       const monthlyLaborCost = monthlyOrders?.reduce((sum, o) => sum + (o.total_labor_cost_minor || 0), 0) || 0;
       const monthlyShippingCost = monthlyOrders?.reduce((sum, o) => sum + (o.shipping_cost_minor || 0), 0) || 0;
@@ -168,34 +165,20 @@ export default function Dashboard() {
       // Calculate net profit from profit distributions (actual order profit data)
       const { data: monthlyProfitDistributions } = await supabase
         .from('profit_distributions')
-        .select('total_profit_minor, distribution_date')
+        .select('total_profit_minor')
         .eq('is_distributed', true)
-        .gte('distribution_date', startOfMonthStr);
+        .gte('distribution_date', startOfMonth.toISOString().split('T')[0]);
 
-      console.log('Monthly profit distributions:', monthlyProfitDistributions);
-      
       const monthlyNetProfit = monthlyProfitDistributions?.reduce((sum, p) => sum + (p.total_profit_minor || 0), 0) || 0;
 
       const { data: monthlyTxns } = await supabase
         .from('transactions')
-        .select('amount_minor, transaction_type, transaction_date')
-        .gte('transaction_date', startOfMonthStr);
+        .select('amount_minor, transaction_type')
+        .gte('transaction_date', startOfMonth.toISOString().split('T')[0]);
 
       const monthlyExpenses = monthlyTxns
         ?.filter(t => t.transaction_type === 'expense')
         .reduce((sum, t) => sum + (t.amount_minor || 0), 0) || 0;
-        
-      console.log('Dashboard monthly data:', {
-        monthlyRevenue,
-        monthlyLaborCost,
-        monthlyShippingCost,
-        monthlyNetProfit,
-        totalBusinessExpenses,
-        monthlyExpenses,
-        ordersCompleted,
-        ordersPending,
-        startOfMonthStr
-      });
 
       // Count totals
       const { count: totalCustomers } = await supabase
@@ -234,7 +217,7 @@ export default function Dashboard() {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-wood-700"></div>
       </div>
     );
   }
@@ -263,7 +246,7 @@ export default function Dashboard() {
         <select
           value={period}
           onChange={(e) => setPeriod(e.target.value as 'day' | 'week' | 'month')}
-          className="px-4 py-2 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary"
+          className="px-4 py-2 border border-neutral-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-wood-500"
         >
           <option value="day">Today</option>
           <option value="week">This Week</option>
@@ -317,13 +300,13 @@ export default function Dashboard() {
             .map((account) => (
             <div
               key={account.id}
-              className="bg-gradient-to-br from-primary-light to-accent-light rounded-lg p-4 border border-primary"
+              className="bg-gradient-to-br from-wood-50 to-wood-100 rounded-lg p-4 border border-wood-200"
             >
-              <div className="text-sm text-primary-hover font-medium">{account.account_name}</div>
-              <div className="text-xl font-bold text-primary-selected mt-1">
+              <div className="text-sm text-wood-600 font-medium">{account.account_name}</div>
+              <div className="text-xl font-bold text-wood-800 mt-1">
                 {formatCurrency(account.balance_minor)}
               </div>
-              <div className="text-xs text-primary-hover mt-1 capitalize">{account.account_type}</div>
+              <div className="text-xs text-wood-500 mt-1 capitalize">{account.account_type}</div>
             </div>
           ))}
         </div>
@@ -368,7 +351,7 @@ export default function Dashboard() {
                 <RechartsXAxis dataKey="name" />
                 <RechartsYAxis tickFormatter={(v) => `${(v / 100).toFixed(0)}`} />
                 <RechartsTooltip formatter={(value: number) => formatCurrency(value)} />
-                <RechartsBar dataKey="value" fill="#8AA624" radius={[4, 4, 0, 0]} />
+                <RechartsBar dataKey="value" fill="#5C4033" radius={[4, 4, 0, 0]} />
               </RechartsBarChart>
             </ResponsiveContainer>
           </div>
@@ -465,14 +448,14 @@ export default function Dashboard() {
       {data.recentProfitDistributions.length > 0 && (
         <div className="bg-white rounded-xl shadow-sm border border-neutral-200 p-6">
           <div className="flex items-center gap-2 mb-4">
-            <PieChartIcon className="w-5 h-5 text-primary" />
+            <PieChartIcon className="w-5 h-5 text-wood-600" />
             <h2 className="text-lg font-semibold text-neutral-900">Recent Profit Distributions</h2>
           </div>
           <div className="space-y-3">
             {data.recentProfitDistributions.map((dist) => (
               <div
                 key={dist.id}
-                className="border border-primary rounded-lg p-4 bg-primary-light"
+                className="border border-wood-200 rounded-lg p-4 bg-wood-50"
               >
                 <div className="flex items-center justify-between mb-3">
                   <div>
@@ -490,22 +473,22 @@ export default function Dashboard() {
                     </div>
                   </div>
                 </div>
-                <div className="grid grid-cols-3 gap-3 pt-3 border-t border-primary">
+                <div className="grid grid-cols-3 gap-3 pt-3 border-t border-wood-200">
                   <div className="text-center">
                     <div className="text-xs text-neutral-600">Ashan</div>
-                    <div className="font-semibold text-primary-selected">
+                    <div className="font-semibold text-wood-700">
                       {formatCurrency(dist.ashan_share_minor)}
                     </div>
                   </div>
                   <div className="text-center">
                     <div className="text-xs text-neutral-600">Praveen</div>
-                    <div className="font-semibold text-primary-selected">
+                    <div className="font-semibold text-wood-700">
                       {formatCurrency(dist.praveen_share_minor)}
                     </div>
                   </div>
                   <div className="text-center">
                     <div className="text-xs text-neutral-600">Business</div>
-                    <div className="font-semibold text-primary-selected">
+                    <div className="font-semibold text-wood-700">
                       {formatCurrency(dist.business_share_minor)}
                     </div>
                   </div>
@@ -564,8 +547,8 @@ function StatCard({
   return (
     <div className="bg-white rounded-xl shadow-sm border border-neutral-200 p-4">
       <div className="flex items-center gap-3">
-        <div className="w-10 h-10 bg-primary-light rounded-lg flex items-center justify-center">
-          <Icon className="w-5 h-5 text-primary" />
+        <div className="w-10 h-10 bg-wood-100 rounded-lg flex items-center justify-center">
+          <Icon className="w-5 h-5 text-wood-600" />
         </div>
         <div>
           <div className="text-2xl font-bold text-neutral-900">{value}</div>
