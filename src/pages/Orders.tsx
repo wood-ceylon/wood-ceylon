@@ -285,19 +285,45 @@ export default function Orders() {
     if (!confirm('Are you sure you want to delete this order?')) return;
     
     try {
-      // First, delete any profit distribution transactions for this order
-      const { error: txnError } = await supabase
-        .from('transactions')
-        .delete()
-        .eq('reference_type', 'profit_share')
-        .eq('reference_id', id);
+      // Step 1: Get all profit distributions for this order first
+      const { data: profitDistributions } = await supabase
+        .from('profit_distributions')
+        .select('id')
+        .eq('order_id', id);
       
-      if (txnError) {
-        console.error('Error deleting profit transactions:', txnError);
-        // Continue with order deletion even if profit transactions deletion fails
+      const distributionIds = profitDistributions?.map(p => p.id) || [];
+      console.log(`Found ${distributionIds.length} profit distribution(s) for order ${id}`);
+      
+      if (distributionIds.length > 0) {
+        console.log('Profit distribution IDs to delete:', distributionIds);
       }
       
-      // Delete any profit distribution records for this order
+      // Step 2: Delete all transactions related to profit distributions
+      if (distributionIds.length > 0) {
+        // Delete transactions that reference these profit distributions
+        const { error: txnError1 } = await supabase
+          .from('transactions')
+          .delete()
+          .eq('reference_type', 'profit_share')
+          .in('reference_id', distributionIds);
+        
+        if (txnError1) {
+          console.error('Error deleting profit distribution transactions:', txnError1);
+        }
+        
+        // Also delete transactions that reference the order directly
+        const { error: txnError2 } = await supabase
+          .from('transactions')
+          .delete()
+          .eq('reference_type', 'profit_share')
+          .eq('reference_id', id);
+        
+        if (txnError2) {
+          console.error('Error deleting order profit transactions:', txnError2);
+        }
+      }
+      
+      // Step 3: Delete profit distribution records
       const { error: profitError } = await supabase
         .from('profit_distributions')
         .delete()
@@ -335,8 +361,30 @@ export default function Orders() {
       if (error) {
         showError('Failed to delete order');
       } else {
-        showSuccess('Order deleted successfully');
+        // Store deleted order info for potential restoration
+        const orderToDelete = orders.find(o => o.id === id);
+        if (orderToDelete) {
+          localStorage.setItem('lastDeletedOrder', JSON.stringify({
+            ...orderToDelete,
+            deletedAt: new Date().toISOString()
+          }));
+        }
+        
+        // Calculate what was deleted for the success message
+        let deletedItems = ['Order'];
+        if (distributionIds.length > 0) {
+          deletedItems.push(`${distributionIds.length} profit distribution(s)`);
+        }
+        
+        showSuccess(`Order deleted successfully - removed: ${deletedItems.join(', ')}`);
+        console.log('Order deletion completed. Removed:', deletedItems.join(', '));
         loadOrders();
+        
+        // Trigger a page refresh to update Dashboard and Transaction summaries
+        setTimeout(() => {
+          // Refresh the current page to update all summaries
+          window.location.reload();
+        }, 1000); // Give user time to see the success message
       }
     } catch (error) {
       console.error('Error during order deletion:', error);
