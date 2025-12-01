@@ -4,168 +4,6 @@ import { Order, OrderItem, Customer, Product, Worker, PaymentStatus, OrderPlatfo
 import { Plus, Edit, Trash2, Eye, Filter, Download, X, FileText } from 'lucide-react';
 import { showSuccess, showError, showLoading, dismissToast } from '../lib/toast';
 
-// Function to recalculate ALL account balances from scratch
-async function recalculateAllAccountBalances() {
-  try {
-    console.log('🔄 Starting complete account balance recalculation...');
-    
-    // Get all accounts
-    const { data: allAccounts, error: accountsError } = await supabase
-      .from('accounts')
-      .select('*')
-      .eq('is_active', true);
-    
-    if (accountsError) throw accountsError;
-    console.log(`📊 Found ${allAccounts.length} active accounts to recalculate`);
-    
-    // Initialize all balances to 0
-    const balanceUpdates = allAccounts.map(account => ({
-      id: account.id,
-      balance_minor: 0
-    }));
-    
-    // Get all transactions
-    const { data: allTransactions, error: transactionsError } = await supabase
-      .from('transactions')
-      .select('*')
-      .order('created_at', { ascending: true }); // Process in chronological order
-    
-    if (transactionsError) throw transactionsError;
-    console.log(`💰 Processing ${allTransactions.length} transactions for balance calculation`);
-    
-    // Calculate balances from transactions
-    const accountBalances = new Map();
-    allAccounts.forEach(account => {
-      accountBalances.set(account.id, 0);
-    });
-    
-    for (const transaction of allTransactions) {
-      if (transaction.transaction_type === 'income' && transaction.to_account_id) {
-        // Add to 'to' account
-        const currentBalance = accountBalances.get(transaction.to_account_id) || 0;
-        accountBalances.set(transaction.to_account_id, currentBalance + transaction.amount_minor);
-      } 
-      else if (transaction.transaction_type === 'expense' && transaction.from_account_id) {
-        // Subtract from 'from' account
-        const currentBalance = accountBalances.get(transaction.from_account_id) || 0;
-        accountBalances.set(transaction.from_account_id, currentBalance - transaction.amount_minor);
-      }
-      else if (transaction.transaction_type === 'transfer' && transaction.from_account_id && transaction.to_account_id) {
-        // Subtract from 'from' account
-        const fromBalance = accountBalances.get(transaction.from_account_id) || 0;
-        accountBalances.set(transaction.from_account_id, fromBalance - transaction.amount_minor);
-        
-        // Add to 'to' account
-        const toBalance = accountBalances.get(transaction.to_account_id) || 0;
-        accountBalances.set(transaction.to_account_id, toBalance + transaction.amount_minor);
-      }
-    }
-    
-    // Update all accounts with calculated balances
-    let updateCount = 0;
-    for (const [accountId, calculatedBalance] of accountBalances) {
-      const { error: updateError } = await supabase
-        .from('accounts')
-        .update({ balance_minor: calculatedBalance })
-        .eq('id', accountId);
-      
-      if (updateError) {
-        console.error(`❌ Failed to update account ${accountId}:`, updateError);
-      } else {
-        updateCount++;
-      }
-    }
-    
-    console.log(`✅ Successfully recalculated and updated ${updateCount} account balances`);
-    
-    // Get final summary for logging
-    const updatedAccounts = Array.from(accountBalances.entries()).map(([id, balance]) => ({
-      id,
-      balance
-    }));
-    
-    console.log('📈 Final account balances:', updatedAccounts.map(a => ({ accountId: a.id, balance: a.balance })));
-    
-    return updatedAccounts;
-    
-  } catch (error) {
-    console.error('❌ Error recalculating account balances:', error);
-    throw new Error(`Failed to recalculate account balances: ${error.message}`);
-  }
-}
-
-// Legacy function for individual transaction reversal (kept for compatibility)
-async function updateAccountBalancesForDelete(transaction: any) {
-  try {
-    if (transaction.transaction_type === 'income' && transaction.to_account_id) {
-      const { data: currentAccount, error: fetchError } = await supabase
-        .from('accounts')
-        .select('balance_minor')
-        .eq('id', transaction.to_account_id)
-        .single();
-
-      if (fetchError) throw fetchError;
-
-      const { error } = await supabase
-        .from('accounts')
-        .update({
-          balance_minor: (currentAccount?.balance_minor || 0) - transaction.amount_minor
-        })
-        .eq('id', transaction.to_account_id);
-
-      if (error) throw error;
-    } 
-    else if (transaction.transaction_type === 'expense' && transaction.from_account_id) {
-      const { data: currentAccount, error: fetchError } = await supabase
-        .from('accounts')
-        .select('balance_minor')
-        .eq('id', transaction.from_account_id)
-        .single();
-
-      if (fetchError) throw fetchError;
-
-      const { error } = await supabase
-        .from('accounts')
-        .update({
-          balance_minor: (currentAccount?.balance_minor || 0) + transaction.amount_minor
-        })
-        .eq('id', transaction.from_account_id);
-
-      if (error) throw error;
-    }
-    else if (transaction.transaction_type === 'transfer' && transaction.from_account_id && transaction.to_account_id) {
-      const [fromAccountResult, toAccountResult] = await Promise.all([
-        supabase.from('accounts').select('balance_minor').eq('id', transaction.from_account_id).single(),
-        supabase.from('accounts').select('balance_minor').eq('id', transaction.to_account_id).single()
-      ]);
-
-      if (fromAccountResult.error) throw fromAccountResult.error;
-      if (toAccountResult.error) throw toAccountResult.error;
-      
-      const { error: fromError } = await supabase
-        .from('accounts')
-        .update({
-          balance_minor: (fromAccountResult.data?.balance_minor || 0) + transaction.amount_minor
-        })
-        .eq('id', transaction.from_account_id);
-
-      if (fromError) throw fromError;
-
-      const { error: toError } = await supabase
-        .from('accounts')
-        .update({
-          balance_minor: (toAccountResult.data?.balance_minor || 0) - transaction.amount_minor
-        })
-        .eq('id', transaction.to_account_id);
-
-      if (toError) throw toError;
-    }
-  } catch (error) {
-    console.error('Error reversing account balances:', error);
-    throw new Error('Failed to reverse account balances');
-  }
-}
-
 export default function Orders() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -460,73 +298,32 @@ export default function Orders() {
         console.log('Profit distribution IDs to delete:', distributionIds);
       }
       
-      // Step 2: Get ALL transactions related to this order BEFORE deleting them
-      // Get profit distribution transactions
-      const { data: profitDistributionTransactions } = await supabase
-        .from('transactions')
-        .select('*')
-        .eq('reference_type', 'profit_share')
-        .in('reference_id', distributionIds.length > 0 ? distributionIds : ['none']);
-
-      // Get direct order reference transactions
-      const { data: directOrderTransactions } = await supabase
-        .from('transactions')
-        .select('*')
-        .eq('reference_type', 'order')
-        .eq('reference_id', id);
-
-      // Get any other transactions that might reference the order_id in description or other fields
-      const { data: orderDescriptionTransactions } = await supabase
-        .from('transactions')
-        .select('*')
-        .ilike('description', `%order ${id}%`);
-
-      // Combine all transactions to delete
-      const allTransactionsToDelete = [
-        ...(profitDistributionTransactions || []),
-        ...(directOrderTransactions || []),
-        ...(orderDescriptionTransactions || [])
-      ];
-
-      // Remove duplicates based on transaction ID
-      const uniqueTransactionsToDelete = allTransactionsToDelete.filter((transaction, index, self) =>
-        index === self.findIndex(t => t.id === transaction.id)
-      );
-
-      console.log(`🔍 Found ${uniqueTransactionsToDelete.length} transactions to delete for order ${id}:`, 
-        uniqueTransactionsToDelete.map(t => ({ id: t.id, type: t.transaction_type, amount: t.amount_minor })));
-
-      // Step 3: Delete all transactions we identified
-      if (uniqueTransactionsToDelete.length > 0) {
-        const transactionIds = uniqueTransactionsToDelete.map(t => t.id);
-        console.log(`🗑️ Deleting transactions with IDs:`, transactionIds);
-        
-        const { error: txnError } = await supabase
+      // Step 2: Delete all transactions related to profit distributions
+      if (distributionIds.length > 0) {
+        // Delete transactions that reference these profit distributions
+        const { error: txnError1 } = await supabase
           .from('transactions')
           .delete()
-          .in('id', transactionIds);
+          .eq('reference_type', 'profit_share')
+          .in('reference_id', distributionIds);
         
-        if (txnError) {
-          console.error('❌ Error deleting transactions:', txnError);
-        } else {
-          console.log(`✅ Successfully deleted ${transactionIds.length} transactions for order ${id}`);
+        if (txnError1) {
+          console.error('Error deleting profit distribution transactions:', txnError1);
         }
-      } else {
-        console.log(`⚠️ No transactions found to delete for order ${id}`);
+        
+        // Also delete transactions that reference the order directly
+        const { error: txnError2 } = await supabase
+          .from('transactions')
+          .delete()
+          .eq('reference_type', 'profit_share')
+          .eq('reference_id', id);
+        
+        if (txnError2) {
+          console.error('Error deleting order profit transactions:', txnError2);
+        }
       }
-
-      // Step 4: **CRITICAL FIX** - Recalculate ALL account balances from scratch
-      console.log('🔄 Starting comprehensive balance recalculation after transaction deletion...');
-      try {
-        const recalculatedAccounts = await recalculateAllAccountBalances();
-        console.log('✅ Account balance recalculation completed successfully');
-        console.log('📊 Updated account balances:', recalculatedAccounts.map(a => ({ id: a.id, balance: a.balance })));
-      } catch (recalcError) {
-        console.error('❌ Critical error during balance recalculation:', recalcError);
-        showError('Warning: Order deleted but balance recalculation failed. Please refresh the page manually.');
-      }
-
-      // Step 5: Delete profit distribution records completely
+      
+      // Step 3: Delete profit distribution records completely
       const { error: profitError } = await supabase
         .from('profit_distributions')
         .delete()
@@ -539,7 +336,7 @@ export default function Orders() {
         console.log('Profit distributions deleted for order:', id);
       }
       
-      // Step 5: Delete worker payment records (labor costs) for this order
+      // Delete worker payment records (labor costs) for this order
       const { error: workerError } = await supabase
         .from('worker_payment_records')
         .delete()
@@ -550,7 +347,7 @@ export default function Orders() {
         // Continue with order deletion even if worker payment records deletion fails
       }
       
-      // Step 6: Delete order items for this order
+      // Delete order items for this order
       const { error: itemsError } = await supabase
         .from('order_items')
         .delete()
@@ -561,7 +358,7 @@ export default function Orders() {
         // Continue with order deletion even if order items deletion fails
       }
       
-      // Step 7: Finally, deactivate the order
+      // Finally, deactivate the order
       const { error } = await supabase.from('orders').update({ is_active: false }).eq('id', id);
       if (error) {
         showError('Failed to delete order');
@@ -577,20 +374,12 @@ export default function Orders() {
         
         // Calculate what was deleted for the success message
         let deletedItems = ['Order'];
-        let deletedTransactionCount = uniqueTransactionsToDelete.length;
-        
         if (distributionIds.length > 0) {
-          deletedItems.push(`${distributionIds.length} profit distribution(s)`);
+          deletedItems.push(`${distributionIds.length} profit distribution(s) and related transactions`);
         }
         
-        if (deletedTransactionCount > 0) {
-          deletedItems.push(`${deletedTransactionCount} transaction(s)`);
-        }
-        
-        deletedItems.push('recalculated all account balances');
-        
-        showSuccess(`✅ Order deleted successfully - removed: ${deletedItems.join(', ')}`);
-        console.log('✅ Order deletion completed with comprehensive balance recalculation. Removed:', deletedItems.join(', '));
+        showSuccess(`Order deleted successfully - removed: ${deletedItems.join(', ')}`);
+        console.log('Order deletion completed. Removed:', deletedItems.join(', '));
         loadOrders();
         
         // Trigger a page refresh to update Dashboard and Transaction summaries
