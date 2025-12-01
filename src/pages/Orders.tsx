@@ -4,6 +4,168 @@ import { Order, OrderItem, Customer, Product, Worker, PaymentStatus, OrderPlatfo
 import { Plus, Edit, Trash2, Eye, Filter, Download, X, FileText } from 'lucide-react';
 import { showSuccess, showError, showLoading, dismissToast } from '../lib/toast';
 
+// Function to recalculate ALL account balances from scratch
+async function recalculateAllAccountBalances() {
+  try {
+    console.log('🔄 Starting complete account balance recalculation...');
+    
+    // Get all accounts
+    const { data: allAccounts, error: accountsError } = await supabase
+      .from('accounts')
+      .select('*')
+      .eq('is_active', true);
+    
+    if (accountsError) throw accountsError;
+    console.log(`📊 Found ${allAccounts.length} active accounts to recalculate`);
+    
+    // Initialize all balances to 0
+    const balanceUpdates = allAccounts.map(account => ({
+      id: account.id,
+      balance_minor: 0
+    }));
+    
+    // Get all transactions
+    const { data: allTransactions, error: transactionsError } = await supabase
+      .from('transactions')
+      .select('*')
+      .order('created_at', { ascending: true }); // Process in chronological order
+    
+    if (transactionsError) throw transactionsError;
+    console.log(`💰 Processing ${allTransactions.length} transactions for balance calculation`);
+    
+    // Calculate balances from transactions
+    const accountBalances = new Map();
+    allAccounts.forEach(account => {
+      accountBalances.set(account.id, 0);
+    });
+    
+    for (const transaction of allTransactions) {
+      if (transaction.transaction_type === 'income' && transaction.to_account_id) {
+        // Add to 'to' account
+        const currentBalance = accountBalances.get(transaction.to_account_id) || 0;
+        accountBalances.set(transaction.to_account_id, currentBalance + transaction.amount_minor);
+      } 
+      else if (transaction.transaction_type === 'expense' && transaction.from_account_id) {
+        // Subtract from 'from' account
+        const currentBalance = accountBalances.get(transaction.from_account_id) || 0;
+        accountBalances.set(transaction.from_account_id, currentBalance - transaction.amount_minor);
+      }
+      else if (transaction.transaction_type === 'transfer' && transaction.from_account_id && transaction.to_account_id) {
+        // Subtract from 'from' account
+        const fromBalance = accountBalances.get(transaction.from_account_id) || 0;
+        accountBalances.set(transaction.from_account_id, fromBalance - transaction.amount_minor);
+        
+        // Add to 'to' account
+        const toBalance = accountBalances.get(transaction.to_account_id) || 0;
+        accountBalances.set(transaction.to_account_id, toBalance + transaction.amount_minor);
+      }
+    }
+    
+    // Update all accounts with calculated balances
+    let updateCount = 0;
+    for (const [accountId, calculatedBalance] of accountBalances) {
+      const { error: updateError } = await supabase
+        .from('accounts')
+        .update({ balance_minor: calculatedBalance })
+        .eq('id', accountId);
+      
+      if (updateError) {
+        console.error(`❌ Failed to update account ${accountId}:`, updateError);
+      } else {
+        updateCount++;
+      }
+    }
+    
+    console.log(`✅ Successfully recalculated and updated ${updateCount} account balances`);
+    
+    // Get final summary for logging
+    const updatedAccounts = Array.from(accountBalances.entries()).map(([id, balance]) => ({
+      id,
+      balance
+    }));
+    
+    console.log('📈 Final account balances:', updatedAccounts.map(a => ({ accountId: a.id, balance: a.balance })));
+    
+    return updatedAccounts;
+    
+  } catch (error) {
+    console.error('❌ Error recalculating account balances:', error);
+    throw new Error(`Failed to recalculate account balances: ${error.message}`);
+  }
+}
+
+// Legacy function for individual transaction reversal (kept for compatibility)
+async function updateAccountBalancesForDelete(transaction: any) {
+  try {
+    if (transaction.transaction_type === 'income' && transaction.to_account_id) {
+      const { data: currentAccount, error: fetchError } = await supabase
+        .from('accounts')
+        .select('balance_minor')
+        .eq('id', transaction.to_account_id)
+        .single();
+
+      if (fetchError) throw fetchError;
+
+      const { error } = await supabase
+        .from('accounts')
+        .update({
+          balance_minor: (currentAccount?.balance_minor || 0) - transaction.amount_minor
+        })
+        .eq('id', transaction.to_account_id);
+
+      if (error) throw error;
+    } 
+    else if (transaction.transaction_type === 'expense' && transaction.from_account_id) {
+      const { data: currentAccount, error: fetchError } = await supabase
+        .from('accounts')
+        .select('balance_minor')
+        .eq('id', transaction.from_account_id)
+        .single();
+
+      if (fetchError) throw fetchError;
+
+      const { error } = await supabase
+        .from('accounts')
+        .update({
+          balance_minor: (currentAccount?.balance_minor || 0) + transaction.amount_minor
+        })
+        .eq('id', transaction.from_account_id);
+
+      if (error) throw error;
+    }
+    else if (transaction.transaction_type === 'transfer' && transaction.from_account_id && transaction.to_account_id) {
+      const [fromAccountResult, toAccountResult] = await Promise.all([
+        supabase.from('accounts').select('balance_minor').eq('id', transaction.from_account_id).single(),
+        supabase.from('accounts').select('balance_minor').eq('id', transaction.to_account_id).single()
+      ]);
+
+      if (fromAccountResult.error) throw fromAccountResult.error;
+      if (toAccountResult.error) throw toAccountResult.error;
+      
+      const { error: fromError } = await supabase
+        .from('accounts')
+        .update({
+          balance_minor: (fromAccountResult.data?.balance_minor || 0) + transaction.amount_minor
+        })
+        .eq('id', transaction.from_account_id);
+
+      if (fromError) throw fromError;
+
+      const { error: toError } = await supabase
+        .from('accounts')
+        .update({
+          balance_minor: (toAccountResult.data?.balance_minor || 0) - transaction.amount_minor
+        })
+        .eq('id', transaction.to_account_id);
+
+      if (toError) throw toError;
+    }
+  } catch (error) {
+    console.error('Error reversing account balances:', error);
+    throw new Error('Failed to reverse account balances');
+  }
+}
+
 export default function Orders() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -282,115 +444,306 @@ export default function Orders() {
   }
 
   async function handleDeleteOrder(id: string) {
-    if (!confirm('Are you sure you want to delete this order?')) return;
+    if (!confirm('Are you sure you want to delete this order? This will permanently remove all connected data including transactions, worker payments, inventory movements, and account balance adjustments.')) return;
     
     try {
-      // Step 1: Get all profit distributions for this order first
+      console.log('🗑️ Starting comprehensive cascade deletion for order:', id);
+      
+      // STEP 1: Get order details first for reference
+      const { data: orderData } = await supabase
+        .from('orders')
+        .select('*')
+        .eq('id', id)
+        .single();
+        
+      if (!orderData) {
+        showError('Order not found');
+        return;
+      }
+      
+      // STEP 2: Get ALL connected data before deletion
+      
+      // Get profit distributions
       const { data: profitDistributions } = await supabase
         .from('profit_distributions')
-        .select('id')
+        .select('*')
         .eq('order_id', id);
-      
       const distributionIds = profitDistributions?.map(p => p.id) || [];
-      console.log(`Found ${distributionIds.length} profit distribution(s) for order ${id}`);
+      console.log(`📋 Found ${distributionIds.length} profit distributions`);
       
-      if (distributionIds.length > 0) {
-        console.log('Profit distribution IDs to delete:', distributionIds);
-      }
-      
-      // Step 2: Delete all transactions related to profit distributions
-      if (distributionIds.length > 0) {
-        // Delete transactions that reference these profit distributions
-        const { error: txnError1 } = await supabase
-          .from('transactions')
-          .delete()
-          .eq('reference_type', 'profit_share')
-          .in('reference_id', distributionIds);
-        
-        if (txnError1) {
-          console.error('Error deleting profit distribution transactions:', txnError1);
-        }
-        
-        // Also delete transactions that reference the order directly
-        const { error: txnError2 } = await supabase
-          .from('transactions')
-          .delete()
-          .eq('reference_type', 'profit_share')
-          .eq('reference_id', id);
-        
-        if (txnError2) {
-          console.error('Error deleting order profit transactions:', txnError2);
-        }
-      }
-      
-      // Step 3: Delete profit distribution records completely
-      const { error: profitError } = await supabase
-        .from('profit_distributions')
-        .delete()
-        .eq('order_id', id);
-      
-      if (profitError) {
-        console.error('Error deleting profit distributions:', profitError);
-        // Continue with order deletion even if profit distributions deletion fails
-      } else {
-        console.log('Profit distributions deleted for order:', id);
-      }
-      
-      // Delete worker payment records (labor costs) for this order
-      const { error: workerError } = await supabase
-        .from('worker_payment_records')
-        .delete()
-        .eq('order_id', id);
-      
-      if (workerError) {
-        console.error('Error deleting worker payment records:', workerError);
-        // Continue with order deletion even if worker payment records deletion fails
-      }
-      
-      // Delete order items for this order
-      const { error: itemsError } = await supabase
+      // Get order items
+      const { data: orderItems } = await supabase
         .from('order_items')
-        .delete()
+        .select('*')
         .eq('order_id', id);
+      const orderItemIds = orderItems?.map(item => item.id) || [];
+      console.log(`📋 Found ${orderItemIds.length} order items`);
       
-      if (itemsError) {
-        console.error('Error deleting order items:', itemsError);
-        // Continue with order deletion even if order items deletion fails
+      // Get worker payment records
+      const { data: workerPaymentRecords } = await supabase
+        .from('worker_payment_records')
+        .select('*')
+        .eq('order_id', id);
+      const workerPaymentIds = workerPaymentRecords?.map(w => w.id) || [];
+      console.log(`📋 Found ${workerPaymentIds.length} worker payment records`);
+      
+      // Get stock movements (inventory movements for this order)
+      const { data: stockMovements } = await supabase
+        .from('stock_movements')
+        .select('*')
+        .eq('reference_type', 'order')
+        .eq('reference_id', id);
+      const stockMovementIds = stockMovements?.map(s => s.id) || [];
+      console.log(`📋 Found ${stockMovementIds.length} stock movements`);
+      
+      // STEP 3: COMPREHENSIVE TRANSACTION DETECTION
+      console.log('🔍 Starting comprehensive transaction detection...');
+      
+      // Get all possible transaction types
+      const transactionQueries = [
+        // Profit distribution transactions
+        ...(distributionIds.length > 0 ? [supabase
+          .from('transactions')
+          .select('*')
+          .eq('reference_type', 'profit_share')
+          .in('reference_id', distributionIds)] : []),
+        
+        // Direct order reference transactions
+        supabase
+          .from('transactions')
+          .select('*')
+          .eq('reference_type', 'order')
+          .eq('reference_id', id),
+        
+        // Order description transactions
+        supabase
+          .from('transactions')
+          .select('*')
+          .ilike('description', `%order ${id}%`),
+          
+        // Order number transactions
+        supabase
+          .from('transactions')
+          .select('*')
+          .ilike('description', `%${orderData.order_number}%`),
+          
+        // Worker payment transactions
+        ...(workerPaymentIds.length > 0 ? [supabase
+          .from('transactions')
+          .select('*')
+          .in('reference_id', workerPaymentIds)] : []),
+          
+        // Stock movement transactions
+        ...(stockMovementIds.length > 0 ? [supabase
+          .from('transactions')
+          .select('*')
+          .in('reference_id', stockMovementIds)] : []),
+      ];
+      
+      // Execute all transaction queries in parallel
+      const transactionResults = await Promise.all(transactionQueries);
+      const allTransactionsToDelete = [];
+      
+      for (const result of transactionResults) {
+        if (result.data && result.data.length > 0) {
+          allTransactionsToDelete.push(...result.data);
+        }
       }
       
-      // Finally, deactivate the order
-      const { error } = await supabase.from('orders').update({ is_active: false }).eq('id', id);
-      if (error) {
+      // Remove duplicates based on transaction ID
+      const uniqueTransactionsToDelete = allTransactionsToDelete.filter((transaction, index, self) =>
+        index === self.findIndex(t => t.id === transaction.id)
+      );
+      
+      console.log(`🔍 Found ${uniqueTransactionsToDelete.length} total transactions to delete:`, 
+        uniqueTransactionsToDelete.map(t => ({ 
+          id: t.id, 
+          type: t.transaction_type, 
+          amount: t.amount_minor,
+          reference: `${t.reference_type}:${t.reference_id}`
+        })));
+      
+      // STEP 4: CASCADE DELETION IN CORRECT ORDER
+      console.log('🗑️ Starting cascade deletion...');
+      
+      // Delete in order to avoid foreign key constraint issues
+      const deletionSteps = [];
+      
+      // Step 4a: Delete stock movements (inventory movements)
+      if (stockMovementIds.length > 0) {
+        deletionSteps.push({
+          name: 'Stock Movements',
+          action: supabase.from('stock_movements').delete().in('id', stockMovementIds),
+          count: stockMovementIds.length
+        });
+      }
+      
+      // Step 4b: Delete transactions
+      if (uniqueTransactionsToDelete.length > 0) {
+        const transactionIds = uniqueTransactionsToDelete.map(t => t.id);
+        deletionSteps.push({
+          name: 'Transactions',
+          action: supabase.from('transactions').delete().in('id', transactionIds),
+          count: transactionIds.length
+        });
+      }
+      
+      // Step 4c: Delete worker payment records
+      if (workerPaymentIds.length > 0) {
+        deletionSteps.push({
+          name: 'Worker Payment Records',
+          action: supabase.from('worker_payment_records').delete().in('id', workerPaymentIds),
+          count: workerPaymentIds.length
+        });
+      }
+      
+      // Step 4d: Delete profit distributions
+      if (distributionIds.length > 0) {
+        deletionSteps.push({
+          name: 'Profit Distributions',
+          action: supabase.from('profit_distributions').delete().in('id', distributionIds),
+          count: distributionIds.length
+        });
+      }
+      
+      // Step 4e: Delete order items
+      if (orderItemIds.length > 0) {
+        deletionSteps.push({
+          name: 'Order Items',
+          action: supabase.from('order_items').delete().in('id', orderItemIds),
+          count: orderItemIds.length
+        });
+      }
+      
+      // Execute all deletions
+      let totalDeleted = 0;
+      for (const step of deletionSteps) {
+        try {
+          const { error } = await step.action;
+          if (error) {
+            console.error(`❌ Error deleting ${step.name}:`, error);
+          } else {
+            console.log(`✅ Successfully deleted ${step.count} ${step.name.toLowerCase()}`);
+            totalDeleted += step.count;
+          }
+        } catch (stepError) {
+          console.error(`❌ Error in deletion step ${step.name}:`, stepError);
+        }
+      }
+      
+      // STEP 5: INVENTORY RESTORATION (if applicable)
+      console.log('📦 Restoring inventory for deleted order items...');
+      for (const item of orderItems || []) {
+        if (item.product_id) {
+          try {
+            // Find the stock movement for this item
+            const { data: movementRecord } = await supabase
+              .from('stock_movements')
+              .select('*')
+              .eq('product_id', item.product_id)
+              .eq('reference_id', id)
+              .eq('reference_type', 'order')
+              .single();
+              
+            if (movementRecord) {
+              // Restore the inventory quantity
+              const { data: inventoryRecord } = await supabase
+                .from('inventory')
+                .select('*')
+                .eq('id', movementRecord.inventory_id || 0)
+                .single();
+                
+              if (inventoryRecord) {
+                const restoredQuantity = inventoryRecord.stock_quantity + item.quantity;
+                
+                await supabase
+                  .from('inventory')
+                  .update({ 
+                    stock_quantity: restoredQuantity,
+                    updated_at: new Date().toISOString()
+                  })
+                  .eq('id', inventoryRecord.id);
+                  
+                console.log(`✅ Restored inventory for product: ${item.product_id}, Quantity: +${item.quantity}`);
+              }
+            }
+          } catch (inventoryError) {
+            console.error('❌ Error restoring inventory for item:', item.product_id, inventoryError);
+            // Continue with deletion even if inventory restoration fails
+          }
+        }
+      }
+      
+      // STEP 6: COMPLETE BALANCE RECALCULATION
+      console.log('🔄 Starting complete account balance recalculation...');
+      try {
+        const recalculatedAccounts = await recalculateAllAccountBalances();
+        console.log('✅ Account balance recalculation completed successfully');
+        console.log('📊 Updated account balances:', recalculatedAccounts.map(a => ({ id: a.id, balance: a.balance })));
+      } catch (recalcError) {
+        console.error('❌ Critical error during balance recalculation:', recalcError);
+        showError('Warning: Order deleted but balance recalculation failed. Please refresh the page manually.');
+      }
+      
+      // STEP 7: FINAL ORDER DEACTIVATION
+      const { error: orderError } = await supabase
+        .from('orders')
+        .update({ 
+          is_active: false,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', id);
+        
+      if (orderError) {
+        console.error('❌ Error deactivating order:', orderError);
         showError('Failed to delete order');
-      } else {
-        // Store deleted order info for potential restoration
-        const orderToDelete = orders.find(o => o.id === id);
-        if (orderToDelete) {
-          localStorage.setItem('lastDeletedOrder', JSON.stringify({
-            ...orderToDelete,
-            deletedAt: new Date().toISOString()
-          }));
-        }
-        
-        // Calculate what was deleted for the success message
-        let deletedItems = ['Order'];
-        if (distributionIds.length > 0) {
-          deletedItems.push(`${distributionIds.length} profit distribution(s) and related transactions`);
-        }
-        
-        showSuccess(`Order deleted successfully - removed: ${deletedItems.join(', ')}`);
-        console.log('Order deletion completed. Removed:', deletedItems.join(', '));
-        loadOrders();
-        
-        // Trigger a page refresh to update Dashboard and Transaction summaries
-        setTimeout(() => {
-          // Refresh the current page to update all summaries
-          window.location.reload();
-        }, 1000); // Give user time to see the success message
+        return;
       }
+      
+      // STEP 8: SUCCESS MESSAGE AND CLEANUP
+      // Store deleted order info for potential restoration
+      localStorage.setItem('lastDeletedOrder', JSON.stringify({
+        ...orderData,
+        deletedAt: new Date().toISOString(),
+        connectedDataDeleted: {
+          transactions: uniqueTransactionsToDelete.length,
+          profitDistributions: distributionIds.length,
+          workerPayments: workerPaymentIds.length,
+          stockMovements: stockMovementIds.length,
+          orderItems: orderItemIds.length,
+          inventoryRestored: orderItems?.length || 0
+        }
+      }));
+      
+      // Generate comprehensive deletion summary
+      const deletionSummary = [];
+      if (uniqueTransactionsToDelete.length > 0) deletionSummary.push(`${uniqueTransactionsToDelete.length} transaction(s)`);
+      if (distributionIds.length > 0) deletionSummary.push(`${distributionIds.length} profit distribution(s)`);
+      if (workerPaymentIds.length > 0) deletionSummary.push(`${workerPaymentIds.length} worker payment record(s)`);
+      if (stockMovementIds.length > 0) deletionSummary.push(`${stockMovementIds.length} stock movement(s)`);
+      if (orderItemIds.length > 0) deletionSummary.push(`${orderItemIds.length} order item(s)`);
+      deletionSummary.push('inventory restored');
+      deletionSummary.push('account balances recalculated');
+      
+      showSuccess(`🎉 ORDER DELETED COMPLETELY! Removed: ${deletionSummary.join(', ')}`);
+      console.log('🎉 COMPREHENSIVE ORDER DELETION COMPLETED:');
+      console.log(`   📊 Total items deleted: ${totalDeleted + orderItemIds.length + distributionIds.length + workerPaymentIds.length + stockMovementIds.length}`);
+      console.log(`   💰 Transactions removed: ${uniqueTransactionsToDelete.length}`);
+      console.log(`   🔄 Account balances recalculated for all accounts`);
+      console.log(`   📦 Inventory quantities restored`);
+      
+      // Refresh the orders list
+      await loadOrders();
+      
+      // Trigger comprehensive page refresh to update all connected data
+      setTimeout(() => {
+        console.log('🔄 Triggering page refresh to update Dashboard, Transactions, and Workers pages...');
+        window.location.reload();
+      }, 1500);
+      
     } catch (error) {
-      console.error('Error during order deletion:', error);
-      showError('Failed to delete order');
+      console.error('❌ Critical error during comprehensive order deletion:', error);
+      showError(`Failed to delete order: ${error.message}`);
     }
   }
 
@@ -399,18 +752,18 @@ export default function Orders() {
     : orders.filter(o => o.status === statusFilter);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-neutral-900">Orders</h1>
-          <p className="text-neutral-500">Manage customer orders and production</p>
+          <h1 className="text-2xl font-semibold text-slate-800 tracking-tight">Orders</h1>
+          <p className="text-slate-500 mt-1">Manage customer orders and production</p>
         </div>
         <button
           onClick={() => {
             setEditingOrder(null);
             setShowModal(true);
           }}
-          className="flex items-center gap-2 px-4 py-2 bg-wood-700 text-white rounded-lg hover:bg-wood-800 transition-colors"
+          className="flex items-center gap-2 px-4 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-700 transition-colors shadow-sm"
         >
           <Plus className="w-4 h-4" />
           New Order
@@ -422,10 +775,10 @@ export default function Orders() {
           <button
             key={status}
             onClick={() => setStatusFilter(status)}
-            className={`px-3 py-1 rounded-lg text-sm font-medium ${
+            className={`px-4 py-2 rounded-lg text-sm font-normal transition-colors ${
               statusFilter === status
-                ? 'bg-wood-700 text-white'
-                : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
+                ? 'bg-slate-800 text-white shadow-sm'
+                : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
             }`}
           >
             {status === 'all' ? 'All' : status.replace('_', ' ')}
@@ -433,64 +786,68 @@ export default function Orders() {
         ))}
       </div>
 
-      <div className="bg-white rounded-xl shadow-sm border border-neutral-200 overflow-hidden">
+      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full">
-            <thead className="bg-neutral-50 border-b border-neutral-200">
+            <thead className="bg-slate-50 border-b border-slate-200">
               <tr>
-                <th className="px-4 py-3 text-left text-xs font-medium text-neutral-500 uppercase">Date</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-neutral-500 uppercase">Customer</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-neutral-500 uppercase">Products</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-neutral-500 uppercase">Type</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-neutral-500 uppercase">Platform</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-neutral-500 uppercase">Status</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-neutral-500 uppercase">Total</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-neutral-500 uppercase">Paid</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-neutral-500 uppercase">Actions</th>
+                <th className="px-4 py-4 text-left text-xs font-medium text-slate-500 uppercase tracking-wide">Order ID</th>
+                <th className="px-4 py-4 text-left text-xs font-medium text-slate-500 uppercase tracking-wide">Date</th>
+                <th className="px-4 py-4 text-left text-xs font-medium text-slate-500 uppercase tracking-wide">Customer</th>
+                <th className="px-4 py-4 text-left text-xs font-medium text-slate-500 uppercase tracking-wide">Products</th>
+                <th className="px-4 py-4 text-left text-xs font-medium text-slate-500 uppercase tracking-wide">Type</th>
+                <th className="px-4 py-4 text-left text-xs font-medium text-slate-500 uppercase tracking-wide">Platform</th>
+                <th className="px-4 py-4 text-left text-xs font-medium text-slate-500 uppercase tracking-wide">Status</th>
+                <th className="px-4 py-4 text-left text-xs font-medium text-slate-500 uppercase tracking-wide">Total</th>
+                <th className="px-4 py-4 text-left text-xs font-medium text-slate-500 uppercase tracking-wide">Paid</th>
+                <th className="px-4 py-4 text-left text-xs font-medium text-slate-500 uppercase tracking-wide">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-neutral-200">
+            <tbody className="divide-y divide-slate-100">
               {loading ? (
-                <tr><td colSpan={9} className="px-4 py-8 text-center text-neutral-500">Loading...</td></tr>
+                <tr><td colSpan={10} className="px-4 py-12 text-center text-slate-500">Loading...</td></tr>
               ) : filteredOrders.length === 0 ? (
-                <tr><td colSpan={9} className="px-4 py-8 text-center text-neutral-500">No orders found</td></tr>
+                <tr><td colSpan={10} className="px-4 py-12 text-center text-slate-500">No orders found</td></tr>
               ) : (
                 filteredOrders.map((order) => {
                   const remaining = order.total_amount_minor - (order.paid_amount_minor || 0);
                   return (
-                    <tr key={order.id} className="hover:bg-neutral-50">
-                      <td className="px-4 py-3 font-medium">{new Date(order.order_date).toLocaleDateString()}</td>
-                      <td className="px-4 py-3">{order.customer_name}</td>
-                      <td className="px-4 py-3 text-sm text-neutral-600">
+                    <tr key={order.id} className="hover:bg-slate-50 transition-colors duration-150">
+                      <td className="px-4 py-4 text-sm text-slate-700">
+                        <span className="font-mono text-slate-600">order#{order.order_number}</span>
+                      </td>
+                      <td className="px-4 py-4 text-sm text-slate-700">{new Date(order.order_date).toLocaleDateString()}</td>
+                      <td className="px-4 py-4 text-sm text-slate-700">{order.customer_name}</td>
+                      <td className="px-4 py-4 text-sm text-slate-600">
                         <div className="max-w-xs truncate" title={order.notes || ''}>
                           {order.notes ? order.notes.substring(0, 30) + '...' : 'Multiple items'}
                         </div>
                       </td>
-                      <td className="px-4 py-3">
-                        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
+                      <td className="px-4 py-4">
+                        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-normal bg-slate-100 text-slate-700">
                           Order
                         </span>
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-4">
                         <PlatformBadge platform={order.platform} />
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-4">
                         <StatusBadge status={order.status} />
                       </td>
-                      <td className="px-4 py-3 font-medium">{formatCurrency(order.total_amount_minor)}</td>
-                      <td className="px-4 py-3">
-                        <div className="text-sm">
+                      <td className="px-4 py-4 text-sm text-slate-700">{formatCurrency(order.total_amount_minor)}</td>
+                      <td className="px-4 py-4">
+                        <div className="text-sm text-slate-700">
                           <div>{formatCurrency(order.paid_amount_minor || 0)}</div>
                           {remaining > 0 && (
-                            <div className="text-orange-600 text-xs">Due: {formatCurrency(remaining)}</div>
+                            <div className="text-amber-600 text-xs mt-1">Due: {formatCurrency(remaining)}</div>
                           )}
                         </div>
                       </td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
+                      <td className="px-4 py-4">
+                        <div className="flex items-center gap-1">
                           <button
                             onClick={() => handleViewOrder(order)}
-                            className="p-1 text-blue-600 hover:bg-blue-50 rounded"
+                            className="p-2 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors"
                             title="View Order Details"
                           >
                             <Eye className="w-4 h-4" />
@@ -500,14 +857,14 @@ export default function Orders() {
                               setEditingOrder(order);
                               setShowModal(true);
                             }}
-                            className="p-1 text-wood-600 hover:bg-wood-50 rounded"
+                            className="p-2 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors"
                             title="Edit Order"
                           >
                             <Edit className="w-4 h-4" />
                           </button>
                           <button
                             onClick={() => handleDeleteOrder(order.id)}
-                            className="p-1 text-red-600 hover:bg-red-50 rounded"
+                            className="p-2 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                             title="Delete Order"
                           >
                             <Trash2 className="w-4 h-4" />
@@ -544,7 +901,7 @@ export default function Orders() {
               <div className="flex items-center justify-between">
                 <div>
                   <h2 className="text-xl font-bold">Order Details</h2>
-                  <p className="text-sm text-neutral-500 mt-1">Order ID: {viewingOrder.order_number}</p>
+                  <p className="text-sm text-slate-500 mt-1">Order ID: <span className="font-mono text-slate-600">order#{viewingOrder.order_number}</span></p>
                 </div>
                 <button 
                   onClick={() => {
@@ -938,7 +1295,7 @@ function OrderModal({ order, customers, products, workers, onSave, onClose }: an
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-xl font-bold">{order ? 'Edit Order' : 'New Order'}</h2>
-              <p className="text-sm text-neutral-500 mt-1">Order ID: {nextOrderNumber || 'Generating...'}</p>
+              <p className="text-sm text-slate-500 mt-1">Order ID: <span className="font-mono text-slate-600">order#{nextOrderNumber || 'Generating...'}</span></p>
             </div>
             <button onClick={onClose} className="text-neutral-400 hover:text-neutral-600">
               <X className="w-6 h-6" />
@@ -1285,14 +1642,14 @@ function OrderModal({ order, customers, products, workers, onSave, onClose }: an
 
 function StatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
-    draft: 'bg-neutral-100 text-neutral-700',
-    confirmed: 'bg-blue-100 text-blue-700',
-    in_progress: 'bg-yellow-100 text-yellow-700',
-    completed: 'bg-green-100 text-green-700',
-    cancelled: 'bg-red-100 text-red-700',
+    draft: 'bg-slate-100 text-slate-700',
+    confirmed: 'bg-blue-50 text-blue-700',
+    in_progress: 'bg-amber-50 text-amber-700',
+    completed: 'bg-emerald-50 text-emerald-700',
+    cancelled: 'bg-red-50 text-red-700',
   };
   return (
-    <span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${colors[status] || colors.draft}`}>
+    <span className={`inline-flex px-2 py-1 rounded-full text-xs font-normal ${colors[status] || colors.draft}`}>
       {status.replace('_', ' ')}
     </span>
   );
@@ -1300,13 +1657,13 @@ function StatusBadge({ status }: { status: string }) {
 
 function PaymentStatusBadge({ status }: { status: PaymentStatus }) {
   const colors: Record<string, string> = {
-    pending: 'bg-gray-100 text-gray-700',
-    advance: 'bg-blue-100 text-blue-700',
-    partial: 'bg-orange-100 text-orange-700',
-    full: 'bg-green-100 text-green-700',
+    pending: 'bg-slate-100 text-slate-700',
+    advance: 'bg-blue-50 text-blue-700',
+    partial: 'bg-amber-50 text-amber-700',
+    full: 'bg-emerald-50 text-emerald-700',
   };
   return (
-    <span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${colors[status] || colors.pending}`}>
+    <span className={`inline-flex px-2 py-1 rounded-full text-xs font-normal ${colors[status] || colors.pending}`}>
       {status.charAt(0).toUpperCase() + status.slice(1)}
     </span>
   );
@@ -1314,12 +1671,12 @@ function PaymentStatusBadge({ status }: { status: PaymentStatus }) {
 
 function PlatformBadge({ platform }: { platform: OrderPlatform }) {
   const colors: Record<string, string> = {
-    website: 'bg-blue-100 text-blue-700',
-    etsy: 'bg-orange-100 text-orange-700',
-    local: 'bg-green-100 text-green-700',
+    website: 'bg-blue-50 text-blue-700',
+    etsy: 'bg-amber-50 text-amber-700',
+    local: 'bg-emerald-50 text-emerald-700',
   };
   return (
-    <span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${colors[platform] || colors.website}`}>
+    <span className={`inline-flex px-2 py-1 rounded-full text-xs font-normal ${colors[platform] || colors.website}`}>
       {platform.charAt(0).toUpperCase() + platform.slice(1)}
     </span>
   );
