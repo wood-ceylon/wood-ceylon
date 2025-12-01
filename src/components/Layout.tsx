@@ -40,20 +40,20 @@ export default function Layout() {
 
       {/* Sidebar */}
       <aside
-        className={`fixed lg:static inset-y-0 left-0 z-50 w-64 bg-gradient-to-b from-primary to-primary-selected text-white transform transition-transform duration-300 lg:translate-x-0 ${
+        className={`fixed lg:static inset-y-0 left-0 z-50 w-64 bg-gradient-to-b from-wood-800 to-wood-900 text-white transform transition-transform duration-300 lg:translate-x-0 ${
           sidebarOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
         {/* Logo */}
-        <div className="flex items-center justify-between h-16 px-6 border-b border-primary-selected">
+        <div className="flex items-center justify-between h-16 px-6 border-b border-wood-700">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-primary-hover rounded-lg flex items-center justify-center">
-              <Boxes className="w-5 h-5 text-white" />
+            <div className="w-8 h-8 bg-wood-600 rounded-lg flex items-center justify-center">
+              <Boxes className="w-5 h-5 text-wood-100" />
             </div>
             <span className="font-bold text-lg tracking-tight">Wood Ceylon</span>
           </div>
           <button
-            className="lg:hidden p-1 hover:bg-primary-hover rounded"
+            className="lg:hidden p-1 hover:bg-wood-700 rounded"
             onClick={() => setSidebarOpen(false)}
           >
             <X className="w-5 h-5" />
@@ -70,8 +70,8 @@ export default function Layout() {
               className={({ isActive }) =>
                 `flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
                   isActive
-                    ? 'bg-primary-hover text-white shadow-md'
-                    : 'text-primary-light hover:bg-primary-hover hover:text-white'
+                    ? 'bg-wood-600 text-white shadow-md'
+                    : 'text-wood-200 hover:bg-wood-700 hover:text-white'
                 }`
               }
             >
@@ -82,8 +82,8 @@ export default function Layout() {
         </nav>
 
         {/* Footer */}
-        <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-primary-selected">
-          <div className="text-xs text-primary-light text-center">
+        <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-wood-700">
+          <div className="text-xs text-wood-400 text-center">
             Wood Ceylon BMS v1.0
           </div>
         </div>
