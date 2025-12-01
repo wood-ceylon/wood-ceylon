@@ -323,7 +323,7 @@ export default function Orders() {
         }
       }
       
-      // Step 3: Delete profit distribution records
+      // Step 3: Delete profit distribution records completely
       const { error: profitError } = await supabase
         .from('profit_distributions')
         .delete()
@@ -332,6 +332,8 @@ export default function Orders() {
       if (profitError) {
         console.error('Error deleting profit distributions:', profitError);
         // Continue with order deletion even if profit distributions deletion fails
+      } else {
+        console.log('Profit distributions deleted for order:', id);
       }
       
       // Delete worker payment records (labor costs) for this order
@@ -373,7 +375,7 @@ export default function Orders() {
         // Calculate what was deleted for the success message
         let deletedItems = ['Order'];
         if (distributionIds.length > 0) {
-          deletedItems.push(`${distributionIds.length} profit distribution(s)`);
+          deletedItems.push(`${distributionIds.length} profit distribution(s) and related transactions`);
         }
         
         showSuccess(`Order deleted successfully - removed: ${deletedItems.join(', ')}`);
