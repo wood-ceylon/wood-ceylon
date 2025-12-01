@@ -998,12 +998,12 @@ export default function Orders() {
                   <h3 className="font-semibold text-neutral-900 mb-3">Order Items</h3>
                   <div className="space-y-3">
                     {viewingOrderItems.map((item, index) => (
-                      <div key={index} className="bg-white border-2 border-neutral-200 rounded-lg p-4 hover:border-wood-300 transition-colors">
+                      <div key={index} className="bg-white border-2 border-neutral-200 rounded-lg p-4 hover:border-primary transition-colors">
                         <div className="flex items-start justify-between gap-4">
                           <div className="flex-1">
                             <div className="flex items-center gap-3">
-                              <div className="w-10 h-10 rounded-lg bg-wood-100 flex items-center justify-center">
-                                <FileText className="w-5 h-5 text-wood-600" />
+                              <div className="w-10 h-10 rounded-lg bg-accent flex items-center justify-center">
+                                <FileText className="w-5 h-5 text-white" />
                               </div>
                               <div className="flex-1">
                                 <h4 className="font-bold text-lg text-neutral-900">{item.product_name || item.item_name}</h4>
@@ -1643,9 +1643,9 @@ function OrderModal({ order, customers, products, workers, onSave, onClose }: an
 function StatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
     draft: 'bg-slate-100 text-slate-700',
-    confirmed: 'bg-blue-50 text-blue-700',
-    in_progress: 'bg-amber-50 text-amber-700',
-    completed: 'bg-emerald-50 text-emerald-700',
+    confirmed: 'bg-accent-light text-accent',
+    in_progress: 'bg-yellow-50 text-yellow-700',
+    completed: 'bg-green-50 text-green-700',
     cancelled: 'bg-red-50 text-red-700',
   };
   return (
@@ -1658,9 +1658,9 @@ function StatusBadge({ status }: { status: string }) {
 function PaymentStatusBadge({ status }: { status: PaymentStatus }) {
   const colors: Record<string, string> = {
     pending: 'bg-slate-100 text-slate-700',
-    advance: 'bg-blue-50 text-blue-700',
-    partial: 'bg-amber-50 text-amber-700',
-    full: 'bg-emerald-50 text-emerald-700',
+    advance: 'bg-accent-light text-accent',
+    partial: 'bg-yellow-50 text-yellow-700',
+    full: 'bg-green-50 text-green-700',
   };
   return (
     <span className={`inline-flex px-2 py-1 rounded-full text-xs font-normal ${colors[status] || colors.pending}`}>
@@ -1671,9 +1671,9 @@ function PaymentStatusBadge({ status }: { status: PaymentStatus }) {
 
 function PlatformBadge({ platform }: { platform: OrderPlatform }) {
   const colors: Record<string, string> = {
-    website: 'bg-blue-50 text-blue-700',
-    etsy: 'bg-amber-50 text-amber-700',
-    local: 'bg-emerald-50 text-emerald-700',
+    website: 'bg-accent-light text-accent',
+    etsy: 'bg-orange-50 text-orange-700',
+    local: 'bg-green-50 text-green-700',
   };
   return (
     <span className={`inline-flex px-2 py-1 rounded-full text-xs font-normal ${colors[platform] || colors.website}`}>
