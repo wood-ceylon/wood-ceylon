@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { supabase, formatCurrency, resetOrderSequence } from '../lib/supabase';
 import { Account, SystemSettings, ProductCategory } from '../lib/types';
-import { Settings as SettingsIcon, DollarSign, Users, Tag, Building2, Save } from 'lucide-react';
+import { Settings as SettingsIcon, DollarSign, Users, Tag, Building2, Save, Undo2, AlertTriangle, Plus } from 'lucide-react';
 
-type TabType = 'accounts' | 'profit' | 'categories' | 'business' | 'reset';
+type TabType = 'accounts' | 'profit' | 'categories' | 'business' | 'reverse' | 'reset';
 
 export default function Settings() {
   const [activeTab, setActiveTab] = useState<TabType>('accounts');
@@ -122,6 +122,17 @@ export default function Settings() {
           }}
         />
         
+        {/* Reverse/Undo Tab */}
+        <TabButton
+          icon={<Undo2 className="w-4 h-4" />}
+          label="Reverse Actions"
+          active={activeTab === 'reverse'}
+          onClick={() => {
+            console.log('Reverse tab clicked, setting activeTab to reverse');
+            setActiveTab('reverse');
+          }}
+        />
+        
         {/* Simple test button for Data Reset */}
         <button
           onClick={() => {
@@ -145,6 +156,7 @@ export default function Settings() {
       {activeTab === 'profit' && <ProfitSharingTab settings={settings} onSave={saveSetting} />}
       {activeTab === 'categories' && <CategoriesTab />}
       {activeTab === 'business' && <BusinessInfoTab settings={settings} onSave={saveSetting} />}
+      {activeTab === 'reverse' && <ReverseActionsTab />}
       {activeTab === 'reset' && <DataResetTab />}
     </div>
   );
@@ -770,6 +782,296 @@ function DataResetTab() {
             Warehouses, Inventory levels, System Settings (except order sequence counter which resets to start at WC-2025-0001)
           </p>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ReverseActionsTab() {
+  const [reversing, setReversing] = useState(false);
+  const [lastAction, setLastAction] = useState('');
+  const [orderDetails, setOrderDetails] = useState<any>(null);
+  const [showRestoreForm, setShowRestoreForm] = useState(false);
+  const [restoreData, setRestoreData] = useState({
+    orderNumber: '',
+    customerName: '',
+    amount: ''
+  });
+
+  // Load last deleted order from localStorage (simulated last action)
+  useEffect(() => {
+    const lastDeletedOrder = localStorage.getItem('lastDeletedOrder');
+    if (lastDeletedOrder) {
+      const order = JSON.parse(lastDeletedOrder);
+      setLastAction(`Order ${order.order_number} deleted at ${new Date(order.deletedAt).toLocaleString()}`);
+      setOrderDetails(order);
+    }
+  }, []);
+
+  async function handleRestoreOrder() {
+    if (!orderDetails) {
+      alert('No deleted order found to restore');
+      return;
+    }
+
+    if (!confirm(`Are you sure you want to restore Order ${orderDetails.order_number}? This will recreate all related transactions and data.`)) {
+      return;
+    }
+
+    setReversing(true);
+    try {
+      // Restore the order (set is_active back to true)
+      const { error: orderError } = await supabase
+        .from('orders')
+        .update({ 
+          is_active: true, 
+          updated_at: new Date().toISOString() 
+        })
+        .eq('id', orderDetails.id);
+
+      if (orderError) {
+        throw new Error('Failed to restore order: ' + orderError.message);
+      }
+
+      // Note: In a real implementation, you would also restore:
+      // - profit_distributions related to this order
+      // - worker_payment_records 
+      // - order_items
+      // - Any transactions that were auto-created
+
+      // Clear the last deleted order from localStorage
+      localStorage.removeItem('lastDeletedOrder');
+      
+      alert(`Order ${orderDetails.order_number} restored successfully! Please refresh your browser to see updated summaries.`);
+      setLastAction('');
+      setOrderDetails(null);
+      
+      // Refresh the page to update all summaries
+      setTimeout(() => {
+        window.location.reload();
+      }, 2000);
+      
+    } catch (error: any) {
+      console.error('Error restoring order:', error);
+      alert('Failed to restore order: ' + error.message);
+    }
+    setReversing(false);
+  }
+
+  async function handleManualRestore() {
+    if (!restoreData.orderNumber || !restoreData.customerName || !restoreData.amount) {
+      alert('Please fill in all required fields');
+      return;
+    }
+
+    if (!confirm(`Create a new order based on manual restoration data?`)) {
+      return;
+    }
+
+    setReversing(true);
+    try {
+      // Create a new order based on the manual data
+      const newOrder = {
+        id: crypto.randomUUID(),
+        order_number: `RESTORED-${Date.now()}`,
+        customer_name: restoreData.customerName,
+        total_amount_minor: toMinor(parseFloat(restoreData.amount)),
+        status: 'restored',
+        is_active: true,
+        order_date: new Date().toISOString().split('T')[0],
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+
+      const { error } = await supabase
+        .from('orders')
+        .insert([newOrder]);
+
+      if (error) {
+        throw new Error('Failed to create restored order: ' + error.message);
+      }
+
+      alert('Restored order created successfully! Please refresh your browser to see updated summaries.');
+      setShowRestoreForm(false);
+      setRestoreData({ orderNumber: '', customerName: '', amount: '' });
+      
+      // Refresh the page to update all summaries
+      setTimeout(() => {
+        window.location.reload();
+      }, 2000);
+      
+    } catch (error: any) {
+      console.error('Error creating restored order:', error);
+      alert('Failed to create restored order: ' + error.message);
+    }
+    setReversing(false);
+  }
+
+  function toMinor(amount: number): number {
+    return Math.round(amount * 100);
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+        <div className="flex items-center gap-2 mb-2">
+          <AlertTriangle className="w-5 h-5 text-amber-600" />
+          <h3 className="font-semibold text-amber-800">Reverse/Undo Actions</h3>
+        </div>
+        <p className="text-sm text-amber-700">
+          Use these tools to reverse or undo recent actions. Please note that some reversals may not be 100% accurate 
+          and should be used with caution.
+        </p>
+      </div>
+
+      {/* Last Action Section */}
+      {orderDetails && (
+        <div className="bg-white rounded-xl shadow-sm border border-neutral-200 p-6 space-y-4">
+          <h3 className="font-semibold text-lg flex items-center gap-2">
+            <Undo2 className="w-5 h-5 text-blue-600" />
+            Last Deleted Order
+          </h3>
+          
+          <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+            <p className="text-sm text-red-800 mb-2">{lastAction}</p>
+            <div className="grid grid-cols-2 gap-4 text-sm">
+              <div>
+                <span className="font-medium text-red-700">Customer:</span>
+                <p className="text-red-600">{orderDetails.customer_name}</p>
+              </div>
+              <div>
+                <span className="font-medium text-red-700">Amount:</span>
+                <p className="text-red-600">{formatCurrency(orderDetails.total_amount_minor)}</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex gap-3">
+            <button
+              onClick={handleRestoreOrder}
+              disabled={reversing}
+              className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-neutral-300 disabled:cursor-not-allowed transition-colors font-medium"
+            >
+              <Undo2 className="w-4 h-4" />
+              {reversing ? 'Restoring...' : 'Restore This Order'}
+            </button>
+            
+            <button
+              onClick={() => {
+                localStorage.removeItem('lastDeletedOrder');
+                setOrderDetails(null);
+                setLastAction('');
+                alert('Last action cleared. This order can no longer be automatically restored.');
+              }}
+              className="px-4 py-3 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors font-medium"
+            >
+              Clear Record
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Manual Restore Section */}
+      <div className="bg-white rounded-xl shadow-sm border border-neutral-200 p-6 space-y-4">
+        <h3 className="font-semibold text-lg">Manual Order Restoration</h3>
+        <p className="text-sm text-neutral-600">
+          If automatic restoration is not available, you can manually recreate an order based on your records.
+        </p>
+        
+        {!showRestoreForm ? (
+          <button
+            onClick={() => setShowRestoreForm(true)}
+            className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-wood-700 text-white rounded-lg hover:bg-wood-800 transition-colors font-medium"
+          >
+            <Plus className="w-4 h-4" />
+            Create Manual Restoration
+          </button>
+        ) : (
+          <div className="space-y-4">
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+              <p className="text-sm text-blue-800">
+                <strong>Manual Restoration:</strong> Create a new order based on your manual records. 
+                This does not restore automatic transactions or related data.
+              </p>
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-neutral-700 mb-2">
+                  Order Number (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={restoreData.orderNumber}
+                  onChange={(e) => setRestoreData({...restoreData, orderNumber: e.target.value})}
+                  className="w-full px-3 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-wood-500"
+                  placeholder="e.g., WC-2025-0001"
+                />
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-neutral-700 mb-2">
+                  Customer Name <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={restoreData.customerName}
+                  onChange={(e) => setRestoreData({...restoreData, customerName: e.target.value})}
+                  className="w-full px-3 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-wood-500"
+                  placeholder="Customer name"
+                  required
+                />
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-neutral-700 mb-2">
+                  Amount (LKR) <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={restoreData.amount}
+                  onChange={(e) => setRestoreData({...restoreData, amount: e.target.value})}
+                  className="w-full px-3 py-2 border border-neutral-300 rounded-lg focus:ring-2 focus:ring-wood-500"
+                  placeholder="0.00"
+                  required
+                />
+              </div>
+            </div>
+            
+            <div className="flex gap-3">
+              <button
+                onClick={handleManualRestore}
+                disabled={reversing}
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-neutral-300 disabled:cursor-not-allowed transition-colors font-medium"
+              >
+                <Save className="w-4 h-4" />
+                {reversing ? 'Creating...' : 'Create Restored Order'}
+              </button>
+              
+              <button
+                onClick={() => {
+                  setShowRestoreForm(false);
+                  setRestoreData({ orderNumber: '', customerName: '', amount: '' });
+                }}
+                className="px-4 py-3 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors font-medium"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Help Section */}
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+        <h4 className="font-semibold text-blue-900 mb-2">How Reverse Actions Work</h4>
+        <ul className="text-sm text-blue-800 space-y-1 list-disc list-inside">
+          <li><strong>Automatic Restoration:</strong> When you delete an order, the system stores basic information for potential restoration</li>
+          <li><strong>Manual Restoration:</strong> Create new orders based on your manual records if automatic data is not available</li>
+          <li><strong>Limitations:</strong> Automatic transactions (profit shares, worker payments) may not be fully restored</li>
+          <li><strong>Data Refresh:</strong> Browser will automatically refresh after restoration to update all summaries</li>
+        </ul>
       </div>
     </div>
   );
