@@ -4,83 +4,6 @@ import { Order, OrderItem, Customer, Product, Worker, PaymentStatus, OrderPlatfo
 import { Plus, Edit, Trash2, Eye, Filter, Download, X, FileText } from 'lucide-react';
 import { showSuccess, showError, showLoading, dismissToast } from '../lib/toast';
 
-// Function to reverse account balances when deleting a transaction (copied from Transactions.tsx)
-async function updateAccountBalancesForDelete(transaction: any) {
-  try {
-    if (transaction.transaction_type === 'income' && transaction.to_account_id) {
-      // Reverse income: subtract from the 'to' account
-      const { data: currentAccount, error: fetchError } = await supabase
-        .from('accounts')
-        .select('balance_minor')
-        .eq('id', transaction.to_account_id)
-        .single();
-
-      if (fetchError) throw fetchError;
-
-      const { error } = await supabase
-        .from('accounts')
-        .update({
-          balance_minor: (currentAccount?.balance_minor || 0) - transaction.amount_minor
-        })
-        .eq('id', transaction.to_account_id);
-
-      if (error) throw error;
-    } 
-    else if (transaction.transaction_type === 'expense' && transaction.from_account_id) {
-      // Reverse expense: add back to the 'from' account
-      const { data: currentAccount, error: fetchError } = await supabase
-        .from('accounts')
-        .select('balance_minor')
-        .eq('id', transaction.from_account_id)
-        .single();
-
-      if (fetchError) throw fetchError;
-
-      const { error } = await supabase
-        .from('accounts')
-        .update({
-          balance_minor: (currentAccount?.balance_minor || 0) + transaction.amount_minor
-        })
-        .eq('id', transaction.from_account_id);
-
-      if (error) throw error;
-    }
-    else if (transaction.transaction_type === 'transfer' && transaction.from_account_id && transaction.to_account_id) {
-      // Get current balances for both accounts
-      const [fromAccountResult, toAccountResult] = await Promise.all([
-        supabase.from('accounts').select('balance_minor').eq('id', transaction.from_account_id).single(),
-        supabase.from('accounts').select('balance_minor').eq('id', transaction.to_account_id).single()
-      ]);
-
-      if (fromAccountResult.error) throw fromAccountResult.error;
-      if (toAccountResult.error) throw toAccountResult.error;
-      
-      // Add back to 'from' account
-      const { error: fromError } = await supabase
-        .from('accounts')
-        .update({
-          balance_minor: (fromAccountResult.data?.balance_minor || 0) + transaction.amount_minor
-        })
-        .eq('id', transaction.from_account_id);
-
-      if (fromError) throw fromError;
-
-      // Subtract from 'to' account
-      const { error: toError } = await supabase
-        .from('accounts')
-        .update({
-          balance_minor: (toAccountResult.data?.balance_minor || 0) - transaction.amount_minor
-        })
-        .eq('id', transaction.to_account_id);
-
-      if (toError) throw toError;
-    }
-  } catch (error) {
-    console.error('Error reversing account balances:', error);
-    throw new Error('Failed to reverse account balances');
-  }
-}
-
 export default function Orders() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
@@ -375,28 +298,7 @@ export default function Orders() {
         console.log('Profit distribution IDs to delete:', distributionIds);
       }
       
-      // Step 2: Get all related transactions BEFORE deleting them, so we can reverse account balances
-      const { data: allTransactionsToDelete } = await supabase
-        .from('transactions')
-        .select('*')
-        .or(`and(reference_type.eq.profit_share,reference_id.in.(${distributionIds.join(',')})),and(reference_type.eq.profit_share,reference_id.eq.${id})`);
-      
-      // Step 2.5: Reverse account balances for all transactions before deleting them
-      if (allTransactionsToDelete && allTransactionsToDelete.length > 0) {
-        console.log(`Reversing account balances for ${allTransactionsToDelete.length} transactions before deletion...`);
-        
-        for (const transaction of allTransactionsToDelete) {
-          try {
-            await updateAccountBalancesForDelete(transaction);
-            console.log(`Reversed balance for transaction ${transaction.id} (${transaction.transaction_type})`);
-          } catch (balanceError) {
-            console.error(`Failed to reverse balance for transaction ${transaction.id}:`, balanceError);
-            // Continue with other transactions even if one fails
-          }
-        }
-      }
-      
-      // Step 3: Delete all transactions related to profit distributions
+      // Step 2: Delete all transactions related to profit distributions
       if (distributionIds.length > 0) {
         // Delete transactions that reference these profit distributions
         const { error: txnError1 } = await supabase
@@ -421,7 +323,7 @@ export default function Orders() {
         }
       }
       
-      // Step 4: Delete profit distribution records completely
+      // Step 3: Delete profit distribution records completely
       const { error: profitError } = await supabase
         .from('profit_distributions')
         .delete()
@@ -434,7 +336,7 @@ export default function Orders() {
         console.log('Profit distributions deleted for order:', id);
       }
       
-      // Step 5: Delete worker payment records (labor costs) for this order
+      // Delete worker payment records (labor costs) for this order
       const { error: workerError } = await supabase
         .from('worker_payment_records')
         .delete()
@@ -445,7 +347,7 @@ export default function Orders() {
         // Continue with order deletion even if worker payment records deletion fails
       }
       
-      // Step 6: Delete order items for this order
+      // Delete order items for this order
       const { error: itemsError } = await supabase
         .from('order_items')
         .delete()
@@ -456,7 +358,7 @@ export default function Orders() {
         // Continue with order deletion even if order items deletion fails
       }
       
-      // Step 7: Finally, deactivate the order
+      // Finally, deactivate the order
       const { error } = await supabase.from('orders').update({ is_active: false }).eq('id', id);
       if (error) {
         showError('Failed to delete order');
@@ -472,14 +374,8 @@ export default function Orders() {
         
         // Calculate what was deleted for the success message
         let deletedItems = ['Order'];
-        let deletedTransactionCount = allTransactionsToDelete?.length || 0;
-        
         if (distributionIds.length > 0) {
-          deletedItems.push(`${distributionIds.length} profit distribution(s)`);
-        }
-        
-        if (deletedTransactionCount > 0) {
-          deletedItems.push(`${deletedTransactionCount} transaction(s) and reversed account balances`);
+          deletedItems.push(`${distributionIds.length} profit distribution(s) and related transactions`);
         }
         
         showSuccess(`Order deleted successfully - removed: ${deletedItems.join(', ')}`);
